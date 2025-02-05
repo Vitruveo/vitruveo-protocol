@@ -40,7 +40,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rebase"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
@@ -573,21 +572,6 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 // consensus rules in clique, do nothing here.
 func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, withdrawals []*types.Withdrawal) {
 	// No block rewards in PoA, so the state remains as is
-	perksBatch := chain.CurrentHeader().Perks
-
-	if perksBatch.Sign() > 0 {
-		perksVault := state.GetBalance(rebase.PERKS_VAULT)
-		if perksVault.Cmp(big.NewInt(0)) > 0 { // if perksVault > 0
-			if perksVault.Cmp(perksBatch) < 0 { // if perksVault < perksBatch
-				perksBatch = perksVault // set perksBatch to whatever is left in perksVault
-			}
-
-			state.SubBalance(rebase.PERKS_VAULT, perksBatch)
-			state.AddBalance(rebase.PERKS_POOL, perksBatch)
-			log.Warn("Perks added to pool", "Perks", perksBatch)
-		}
-	}
-
 }
 
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,

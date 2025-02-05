@@ -15,10 +15,11 @@
 */**/*dapps*
 build/_vendor/pkg
 
-data/
+RUN.md
+data-mainnet/
 data1/
 data2/
-
+data/
 .DS_Store
 
 #*

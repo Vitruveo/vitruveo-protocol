@@ -22,6 +22,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
+
+	"github.com/ethereum/go-ethereum/log"
 )
 
 //go:generate go run ../../rlp/rlpgen -type StateAccount -out gen_account_rlp.go
@@ -70,6 +72,13 @@ type SlimAccount struct {
 
 // SlimAccountRLP encodes the state account in 'slim RLP' format.
 func SlimAccountRLP(account StateAccount) []byte {
+	// Ensure the balance is non-negative
+	// Added 2/5/2025 after client bad block issue
+	if account.Balance.Sign() < 0 { 
+		log.Error("SlimAccountRLP: Negative balance detected", "balance", account.Balance, "nonce", account.Nonce)
+		account.Balance = big.NewInt(0) // Reset to zero to avoid encoding failure
+	}
+	
 	slim := SlimAccount{
 		Nonce:   account.Nonce,
 		Balance: account.Balance,

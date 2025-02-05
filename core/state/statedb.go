@@ -510,6 +510,14 @@ func (s *StateDB) GetTransientState(addr common.Address, key common.Hash) common
 
 // updateStateObject writes the given object to the trie.
 func (s *StateDB) updateStateObject(obj *stateObject) {
+	// Prevent committing an account with a negative balance
+	// Added 2/5/2025 after client bad block issue
+
+	if obj.data.Balance.Sign() < 0 {
+		log.Error("updateStateObject: Negative balance detected before commit", "address", obj.address.Hex(), "balance", obj.data.Balance)
+		obj.data.Balance = big.NewInt(0) // Reset to 0 instead of committing an invalid state
+	}
+	
 	// Track the amount of time wasted on updating the account from the trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())

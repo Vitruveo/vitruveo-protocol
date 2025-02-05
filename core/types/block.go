@@ -282,14 +282,14 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 			Perks:    b.header.Perks,
 			Tx:       uint64(len(txs)),
 		}
-		epoch, epochTx, rbx, rbxEpoch, supply, perks := rebase.ProcessRebase(b.header.Number, lastRebaseInfo, currentRebaseInfo)
+		epoch, epochTx, rbx, rbxEpoch, supply := rebase.ProcessRebase(b.header.Number, lastRebaseInfo, currentRebaseInfo)
 
 		b.header.EpochTx = epochTx //lastBlockHeader.EpochTx + uint64(len(txs))
 		b.header.Epoch = epoch
 		b.header.Rbx = rbx
 		b.header.RbxEpoch = rbxEpoch
 		b.header.Supply = supply
-		b.header.Perks = perks
+		b.header.Perks = big.NewInt(0)
 
 		log.Info("Rebase info 💰", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "EpochTx", epochTx)
 	}
