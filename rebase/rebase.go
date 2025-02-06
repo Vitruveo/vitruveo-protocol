@@ -6,10 +6,10 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-var BLOCKS_PER_EPOCH = big.NewInt(24) // 24 = 2 mins //big.NewInt(17280)
+var BLOCKS_PER_EPOCH = big.NewInt(17280)
 
-const START_TX_GOAL = uint64(3) //uint64(10000)
-const EPOCH_TX_INCREMENT = uint64(1) //uint64(500)
+const START_TX_GOAL = uint64(10000)
+const EPOCH_TX_INCREMENT = uint64(500)
 const INTEREST_PER_EPOCH = uint64(100087671)
 
 var INITIAL_SUPPLY, _ = new(big.Int).SetString("60000000000000000000000000", 10) // 60 million
@@ -65,7 +65,6 @@ func GetTransferAmount(amount *big.Int, rbx uint64) *big.Int {
 
 func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (uint64, uint64, uint64, uint64, *big.Int) {
 
-	isSealed := blockNumber.Uint64() > 0 // If the block is > 0, assume sealing
 	epoch := last.Epoch
 	epochTx := last.EpochTx
 	rbx := last.Rbx
@@ -86,18 +85,11 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 
 			// Increment the rebase epoch
 			rbxEpoch = rbxEpoch + 1
-			interest := ((INTEREST_PER_EPOCH - UINT64_DIVISOR) * txRatio / 100) + UINT64_DIVISOR
-
-			rbx = rbx * interest / UINT64_DIVISOR
-
-			if (isSealed) {
-				log.Warn("Rebase Success 🎉", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "Goal", txGoal, "Supply", new(big.Int).Div(supply, DECIMALS))
-			}
+			rbx = (rbx * INTEREST_PER_EPOCH) / UINT64_DIVISOR
+			log.Warn("Rebase Success 🎉", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "Goal", txGoal, "Supply", new(big.Int).Div(supply, DECIMALS))
 
 		} else {
-			if (isSealed) {
-				log.Warn("Rebase Skipped 🙁", "Goal", txGoal, "Tx", epochTx)
-			}
+			log.Warn("Rebase Skipped 🙁", "Goal", txGoal, "Tx", epochTx)
 		}
 
 		// At every epoch the transaction count is always reset
