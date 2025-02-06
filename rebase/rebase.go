@@ -8,7 +8,7 @@ import (
 
 var BLOCKS_PER_EPOCH = big.NewInt(17280)
 
-const START_TX_GOAL = uint64(10000)
+const START_TX_GOAL = uint64(999999)
 const EPOCH_TX_INCREMENT = uint64(500)
 const INTEREST_PER_EPOCH = uint64(100087671)
 
