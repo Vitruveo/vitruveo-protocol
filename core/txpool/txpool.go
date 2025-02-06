@@ -268,12 +268,29 @@ func (p *TxPool) Add(txs []*types.Transaction, local bool, sync bool) []error {
 	//
 	// We also need to track how the transactions were split across the subpools,
 	// so we can piece back the returned errors into the original order.
+
+	// Define the max gas price (10 gwei = 10 * 1e9 wei)
+	maxGasPrice := new(big.Int).Mul(big.NewInt(10), big.NewInt(1e9))
+
 	txsets := make([][]*types.Transaction, len(p.subpools))
 	splits := make([]int, len(txs))
 
 	for i, tx := range txs {
 		// Mark this transaction belonging to no-subpool
 		splits[i] = -1
+
+
+        // 🚀 **Check if the transaction exceeds 10 gwei**
+        if tx.GasPrice().Cmp(maxGasPrice) > 0 {
+            log.Warn("Transaction gas price exceeds 10 gwei limit", "gasPrice", tx.GasPrice(), "txHash", tx.Hash())
+            continue // ❌ Reject the transaction
+        }
+
+        // **If using EIP-1559, also check maxFeePerGas**
+        if tx.Type() == 2 && tx.GasFeeCap().Cmp(maxGasPrice) > 0 {
+            log.Warn("EIP-1559 maxFeePerGas exceeds 10 gwei limit", "maxFeePerGas", tx.GasFeeCap(), "txHash", tx.Hash())
+            continue // ❌ Reject the transaction
+        }		
 
 		// Try to find a subpool that accepts the transaction
 		for j, subpool := range p.subpools {
