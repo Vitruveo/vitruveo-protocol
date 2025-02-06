@@ -21,6 +21,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -70,6 +71,12 @@ type SlimAccount struct {
 
 // SlimAccountRLP encodes the state account in 'slim RLP' format.
 func SlimAccountRLP(account StateAccount) []byte {
+	// Ensure the balance is non-negative
+	if account.Balance.Sign() < 0 {
+		log.Error("SlimAccountRLP: Negative balance detected", "balance", account.Balance, "nonce", account.Nonce)
+		account.Balance = big.NewInt(0) // Reset to zero to avoid encoding failure
+	}
+
 	slim := SlimAccount{
 		Nonce:   account.Nonce,
 		Balance: account.Balance,
