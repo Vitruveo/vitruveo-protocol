@@ -768,6 +768,15 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.Time,
 		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
 		header.MixDigest,
+		
+		// Custom rebase fields - include them in signature calculation
+		header.Epoch,
+		header.EpochTx,
+		header.Rbx,
+		header.RbxEpoch,
+		header.Supply,
+		header.Perks,
+		
 		header.Nonce,
 	}
 	if header.BaseFee != nil {

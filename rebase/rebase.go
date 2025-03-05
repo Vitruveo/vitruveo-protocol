@@ -35,6 +35,11 @@ type RebaseInfo struct {
 }
 
 func GetRebasedAmount(amount *big.Int, rbx uint64) *big.Int {
+	// Verificação de segurança para valores negativos
+	if amount.Sign() < 0 {
+		return new(big.Int).Set(common.Big0)
+	}
+	
 	rebasedAmount := new(big.Int).Mul(amount, new(big.Int).SetUint64(rbx))
 	//log.Warn("GetRebased", "rebased", rebasedAmount, "rbx", rbx)
 	rebasedAmount.Div(rebasedAmount, DIVISOR)
@@ -44,6 +49,10 @@ func GetRebasedAmount(amount *big.Int, rbx uint64) *big.Int {
 }
 
 func GetTransferAmount(amount *big.Int, rbx uint64) *big.Int {
+	// Verificação de segurança para valores negativos
+	if amount.Sign() < 0 {
+		return new(big.Int).Set(common.Big0)
+	}
 
 	expandAmount := new(big.Int).Mul(amount, DIVISOR)
 	senderAmount := new(big.Int).Div(expandAmount, new(big.Int).SetUint64(rbx))
@@ -52,6 +61,11 @@ func GetTransferAmount(amount *big.Int, rbx uint64) *big.Int {
 }
 
 func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (uint64, uint64, uint64, uint64, *big.Int, *big.Int) {
+	// Verificação de segurança para valores negativos em blockNumber
+	if blockNumber == nil || blockNumber.Sign() < 0 {
+		log.Warn("ProcessRebase: Número de bloco negativo ou nulo detectado")
+		return last.Epoch, last.EpochTx, last.Rbx, last.RbxEpoch, last.Supply, big.NewInt(0)
+	}
 
 	epoch := last.Epoch
 	epochTx := last.EpochTx
@@ -80,7 +94,12 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 			rbxEpoch = rbxEpoch + 1
 			interest := ((INTEREST_PER_EPOCH - UINT64_DIVISOR) * txRatio / 100) + UINT64_DIVISOR
 
-			rbx = rbx * interest / UINT64_DIVISOR
+			// Proteção contra overflow ou valores inválidos
+			if interest > 0 {
+				rbx = rbx * interest / UINT64_DIVISOR
+			} else {
+				log.Warn("ProcessRebase: Proteção contra interesse inválido", "interest", interest)
+			}
 
 			// Add perks coins conditionally
 			// Actual addition handled at the next block in consensus/clique/Finalize #576
