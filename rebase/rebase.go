@@ -16,10 +16,6 @@ const INTEREST_PER_EPOCH = uint64(100087671)
 var INITIAL_SUPPLY, _ = new(big.Int).SetString("60000000000000000000000000", 10) // 60 million
 var MAX_SUPPLY, _ = new(big.Int).SetString("250000000000000000000000000", 10)    // 250 million
 
-var PERKS_EPOCH_COINS, _ = new(big.Int).SetString("21232876712328800000000", 10) // 15.5MM divided by 730 epochs vesting
-var PERKS_VAULT = common.HexToAddress("0x2b3c3fb089301488c96bbc6f55f167fd1b128e9f")
-var PERKS_POOL = common.HexToAddress("0xec274828b11338a5fa5a0f83f60dad7be429f15c") //Deploy from 0xa52b723650dc4c2b982c87de55a1378571b28ab0
-
 const UINT64_DIVISOR = uint64(100000000)
 
 var DIVISOR = new(big.Int).Exp(big.NewInt(10), big.NewInt(8), nil)
@@ -39,7 +35,7 @@ func GetRebasedAmount(amount *big.Int, rbx uint64) *big.Int {
 	if amount.Sign() < 0 {
 		return new(big.Int).Set(common.Big0)
 	}
-	
+
 	rebasedAmount := new(big.Int).Mul(amount, new(big.Int).SetUint64(rbx))
 	//log.Warn("GetRebased", "rebased", rebasedAmount, "rbx", rbx)
 	rebasedAmount.Div(rebasedAmount, DIVISOR)
@@ -101,14 +97,7 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 				log.Warn("ProcessRebase: Proteção contra interesse inválido", "interest", interest)
 			}
 
-			// Add perks coins conditionally
-			// Actual addition handled at the next block in consensus/clique/Finalize #576
-			// This conveys an intent to add...actual perks may not be added if
-			// supply is depleted
-			perks = PERKS_EPOCH_COINS
-
 			log.Warn("Rebase Success 🎉🎉🎉", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "Ratio", txRatio, "Supply", supply)
-
 		} else {
 			log.Warn("Rebase Skipped 🙁", "Goal", txGoal, "TX", epochTx, "Ratio", txRatio)
 		}

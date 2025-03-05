@@ -40,7 +40,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rebase"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
@@ -573,21 +572,6 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 // consensus rules in clique, do nothing here.
 func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, withdrawals []*types.Withdrawal) {
 	// No block rewards in PoA, so the state remains as is
-	perksBatch := chain.CurrentHeader().Perks
-
-	if perksBatch.Sign() > 0 {
-		perksVault := state.GetBalance(rebase.PERKS_VAULT)
-		if perksVault.Cmp(big.NewInt(0)) > 0 { // if perksVault > 0
-			if perksVault.Cmp(perksBatch) < 0 { // if perksVault < perksBatch
-				perksBatch = perksVault // set perksBatch to whatever is left in perksVault
-			}
-
-			state.SubBalance(rebase.PERKS_VAULT, perksBatch)
-			state.AddBalance(rebase.PERKS_POOL, perksBatch)
-			log.Warn("Perks added to pool", "Perks", perksBatch)
-		}
-	}
-
 }
 
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
@@ -756,7 +740,7 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 	// Determine if rebase fields should be included based on block number
 	// Hard-coded to include rebase fields only from block 8578866 onward
 	includeRebaseFields := header.Number != nil && header.Number.Uint64() >= 8578888
-	
+
 	// Also check chain configuration as fallback
 	if !includeRebaseFields {
 		if chain := consensus.GetConsensusChainReader(); chain != nil {
@@ -781,7 +765,7 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
 		header.MixDigest,
 	}
-	
+
 	// Include rebase fields only if the fork is active
 	if includeRebaseFields {
 		// Custom rebase fields - include them in signature calculation
@@ -794,7 +778,7 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 			header.Perks,
 		}...)
 	}
-	
+
 	// Always include the nonce at the end
 	enc = append(enc, header.Nonce)
 	if header.BaseFee != nil {
