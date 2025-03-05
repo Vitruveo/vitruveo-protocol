@@ -127,3 +127,16 @@ type PoW interface {
 	// Hashrate returns the current mining hashrate of a PoW consensus engine.
 	Hashrate() float64
 }
+
+// Global variable to store reference to chain reader for config access
+var globalChainReader ChainHeaderReader
+
+// SetConsensusChainReader sets a global chain reader for config access during block processing
+func SetConsensusChainReader(chain ChainHeaderReader) {
+	globalChainReader = chain
+}
+
+// GetConsensusChainReader returns the global chain reader (may be nil)
+func GetConsensusChainReader() ChainHeaderReader {
+	return globalChainReader
+}

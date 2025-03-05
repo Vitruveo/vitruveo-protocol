@@ -753,6 +753,18 @@ func CliqueRLP(header *types.Header) []byte {
 }
 
 func encodeSigHeader(w io.Writer, header *types.Header) {
+	// Determine if rebase fields should be included based on block number
+	// Hard-coded to include rebase fields only from block 8578866 onward
+	includeRebaseFields := header.Number != nil && header.Number.Uint64() >= 8578888
+	
+	// Also check chain configuration as fallback
+	if !includeRebaseFields {
+		if chain := consensus.GetConsensusChainReader(); chain != nil {
+			includeRebaseFields = chain.Config().IsRebaseHashFork(header.Number)
+		}
+	}
+
+	// Default fields for all blocks
 	enc := []interface{}{
 		header.ParentHash,
 		header.UncleHash,
@@ -768,17 +780,23 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.Time,
 		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
 		header.MixDigest,
-		
-		// Custom rebase fields - include them in signature calculation
-		header.Epoch,
-		header.EpochTx,
-		header.Rbx,
-		header.RbxEpoch,
-		header.Supply,
-		header.Perks,
-		
-		header.Nonce,
 	}
+	
+	// Include rebase fields only if the fork is active
+	if includeRebaseFields {
+		// Custom rebase fields - include them in signature calculation
+		enc = append(enc, []interface{}{
+			header.Epoch,
+			header.EpochTx,
+			header.Rbx,
+			header.RbxEpoch,
+			header.Supply,
+			header.Perks,
+		}...)
+	}
+	
+	// Always include the nonce at the end
+	enc = append(enc, header.Nonce)
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
 	}

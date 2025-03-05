@@ -297,6 +297,9 @@ type ChainConfig struct {
 	DAOForkBlock   *big.Int `json:"daoForkBlock,omitempty"`   // TheDAO hard-fork switch block (nil = no fork)
 	DAOForkSupport bool     `json:"daoForkSupport,omitempty"` // Whether the nodes supports or opposes the DAO hard-fork
 
+	// Vitruveo specific forks
+	RebaseHashForkBlock *big.Int `json:"rebaseHashForkBlock,omitempty"` // Block at which the new rebase fields should be included in hash calculation
+
 	// EIP150 implements the Gas price changes (https://github.com/ethereum/EIPs/issues/150)
 	EIP150Block *big.Int `json:"eip150Block,omitempty"` // EIP150 HF block (nil = no fork)
 	EIP155Block *big.Int `json:"eip155Block,omitempty"` // EIP155 HF block
@@ -544,6 +547,16 @@ func (c *ChainConfig) IsPrague(num *big.Int, time uint64) bool {
 // IsVerkle returns whether num is either equal to the Verkle fork time or greater.
 func (c *ChainConfig) IsVerkle(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.VerkleTime, time)
+}
+
+// IsRebaseHashFork returns whether num is either equal to the RebaseHashForkBlock or greater.
+func (c *ChainConfig) IsRebaseHashFork(num *big.Int) bool {
+	// Hard-coded block number for rebase hash fork (8578866)
+	hardcodedForkBlock := big.NewInt(8578888)
+	
+
+	// Check either the config setting or the hard-coded value
+	return isBlockForked(c.RebaseHashForkBlock, num) || (num != nil && num.Cmp(hardcodedForkBlock) >= 0)
 }
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
@@ -853,6 +866,7 @@ type Rules struct {
 	IsBerlin, IsLondon                                      bool
 	IsMerge, IsShanghai, IsCancun, IsPrague                 bool
 	IsVerkle                                                bool
+	IsRebaseHashFork                                        bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -878,5 +892,6 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsCancun:         c.IsCancun(num, timestamp),
 		IsPrague:         c.IsPrague(num, timestamp),
 		IsVerkle:         c.IsVerkle(num, timestamp),
+		IsRebaseHashFork: c.IsRebaseHashFork(num),
 	}
 }
