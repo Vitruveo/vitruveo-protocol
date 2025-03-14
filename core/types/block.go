@@ -328,6 +328,10 @@ func CopyHeader(h *Header) *Header {
 	if cpy.Supply = new(big.Int); h.Supply != nil {
 		cpy.Supply.Set(h.Supply)
 	}
+	// Ensure Rbx is preserved and non-zero
+	if cpy.Rbx == 0 {
+		cpy.Rbx = 100000000 // Default value if none was set
+	}
 	if h.BaseFee != nil {
 		cpy.BaseFee = new(big.Int).Set(h.BaseFee)
 	}

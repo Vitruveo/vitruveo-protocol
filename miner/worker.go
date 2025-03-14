@@ -784,8 +784,14 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 		snap = env.state.Snapshot()
 		gp   = env.gasPool.Gas()
 	)
-	currentRbx := uint64(0)
-	if env.header.Rbx == 0 {
+	// Determine the Rbx value to use for transaction applying
+	currentRbx := env.header.Rbx
+	
+	// If header Rbx is zero (which should never happen with our fixes), try to recover from previous block
+	if currentRbx == 0 {
+		log.Warn("Header with zero Rbx value detected during transaction application", 
+			"block", env.header.Number, "hash", env.header.Hash())
+			
 		blockNumber := env.header.Number.Uint64()
 		prevBlockNumber := blockNumber - 1
 		var prevBlock *types.Block
@@ -796,16 +802,25 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 			}
 			prevBlockNumber--
 		}
-		if prevBlock != nil {
-			//log.Warn("@@@@@@@ DEBUG", "block", prevBlockNumber, "header", prevBlock.Header())
-			if prevBlock.Header() != nil {
-				currentRbx = prevBlock.Header().Rbx
-			}
+		if prevBlock != nil && prevBlock.Header() != nil {
+			currentRbx = prevBlock.Header().Rbx
+			log.Info("Recovered Rbx value from previous block", 
+				"block", prevBlockNumber, 
+				"rbx", currentRbx)
 		}
 	}
 
+	// Final safety check - use default value if still zero
 	if currentRbx == 0 {
 		currentRbx = 100000000
+		log.Warn("Using default Rbx value after recovery attempts failed", 
+			"block", env.header.Number, 
+			"default_rbx", currentRbx)
+	}
+	
+	// Update header Rbx to ensure consistent value
+	if env.header.Rbx == 0 {
+		env.header.Rbx = currentRbx
 	}
 
 	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), currentRbx)

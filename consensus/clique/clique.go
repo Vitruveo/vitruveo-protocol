@@ -768,11 +768,19 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 
 	// Include rebase fields only if the fork is active
 	if includeRebaseFields {
+		// Ensure Rbx value is never zero before including in signature calculation
+		rbx := header.Rbx
+		if rbx == 0 {
+			rbx = 100000000 // Use default value
+			log.Warn("Zero Rbx value detected during signature calculation, using default value", 
+				"block", header.Number, "hash", header.Hash())
+		}
+		
 		// Custom rebase fields - include them in signature calculation
 		enc = append(enc, []interface{}{
 			header.Epoch,
 			header.EpochTx,
-			header.Rbx,
+			rbx,
 			header.RbxEpoch,
 			header.Supply,
 			header.Perks,
