@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -13,14 +14,14 @@ import (
 // BackendWithTxManager extends a Backend with transaction batching
 type BackendWithTxManager struct {
 	// The actual backend
-	backend core.TxPool
+	backend *txpool.TxPool
 	
 	// Our transaction manager
 	txManager *TxManager
 }
 
 // NewBackendWithTxManager creates a new backend with transaction batching
-func NewBackendWithTxManager(backend core.TxPool, blockchain *core.BlockChain, config Config) *BackendWithTxManager {
+func NewBackendWithTxManager(backend *txpool.TxPool, blockchain *core.BlockChain, config Config) *BackendWithTxManager {
 	txManager := New(backend, blockchain, config)
 	txManager.Start()
 	
@@ -35,11 +36,11 @@ func (b *BackendWithTxManager) Stop() {
 	b.txManager.Stop()
 }
 
-// AddRemotes adds new transactions to the pool
-func (b *BackendWithTxManager) AddRemotes(txs []*types.Transaction) []error {
+// Add adds new transactions to the pool
+func (b *BackendWithTxManager) Add(txs []*types.Transaction, local bool, sync bool) []error {
 	// If we're not near rebasing, pass through to backend
 	if !b.txManager.isNearRebasing() {
-		return b.backend.AddRemotes(txs)
+		return b.backend.Add(txs, local, sync)
 	}
 	
 	// Use the transaction manager for batching
@@ -51,22 +52,11 @@ func (b *BackendWithTxManager) AddRemotes(txs []*types.Transaction) []error {
 	return errs
 }
 
-// AddRemote adds a single transaction to the pool
-func (b *BackendWithTxManager) AddRemote(tx *types.Transaction) error {
-	// If we're not near rebasing, pass through to backend
-	if !b.txManager.isNearRebasing() {
-		return b.backend.AddRemote(tx)
-	}
-	
-	// Use the transaction manager for batching
-	return b.txManager.AddTransaction(tx)
-}
-
 // SendTx is a convenience method that adds a transaction to the pool
 func (b *BackendWithTxManager) SendTx(ctx context.Context, tx *types.Transaction) error {
 	// If we're not near rebasing, pass through
 	if !b.txManager.isNearRebasing() {
-		return b.backend.AddRemote(tx)
+		return b.backend.Add([]*types.Transaction{tx}, true, false)[0]
 	}
 	
 	// Use the transaction manager for batching

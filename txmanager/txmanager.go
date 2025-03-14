@@ -3,12 +3,12 @@
 package txmanager
 
 import (
-	"math/big"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rebase"
@@ -41,7 +41,7 @@ type TxManager struct {
 	accounts map[common.Address]*accountInfo
 	
 	blockchain *core.BlockChain
-	txpool     core.TxPool
+	txpool     *txpool.TxPool
 	wg         sync.WaitGroup
 	quit       chan struct{}
 }
@@ -63,7 +63,7 @@ func DefaultConfig() Config {
 }
 
 // New cria um novo gerenciador de transações
-func New(txpool core.TxPool, blockchain *core.BlockChain, config Config) *TxManager {
+func New(txp *txpool.TxPool, blockchain *core.BlockChain, config Config) *TxManager {
 	if config.MaxBatchSize == 0 {
 		config.MaxBatchSize = 100
 	}
@@ -79,7 +79,7 @@ func New(txpool core.TxPool, blockchain *core.BlockChain, config Config) *TxMana
 	
 	return &TxManager{
 		config:     config,
-		txpool:     txpool,
+		txpool:     txp,
 		queue:      make(map[common.Address][]*types.Transaction),
 		newTx:      make(chan struct{}, 1),
 		accounts:   make(map[common.Address]*accountInfo),
@@ -219,7 +219,7 @@ func (tm *TxManager) processQueues() {
 	
 	// Enviar batch para o pool de transações
 	if len(batch) > 0 {
-		errs := tm.txpool.AddRemotes(batch)
+		errs := tm.txpool.Add(batch, true, false)
 		
 		// Log de erros
 		for i, err := range errs {

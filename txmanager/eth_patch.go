@@ -1,11 +1,8 @@
 package txmanager
 
 import (
-	"context"
 	"sync"
 	
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 )
 
