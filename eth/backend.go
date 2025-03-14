@@ -275,6 +275,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	// Successful startup; push a marker and check previous unclean shutdowns.
 	eth.shutdownTracker.MarkStartup()
+	
+	// Run lifecycle hooks registered by other packages
+	runLifecycleHooks(stack, eth)
 
 	return eth, nil
 }

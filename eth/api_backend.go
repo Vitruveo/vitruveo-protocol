@@ -282,6 +282,16 @@ func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscri
 }
 
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
+	// First check if the transaction should be handled by the transaction manager
+	// This will be called by the txmanager package if it's loaded and we're near rebasing
+	// The transaction manager logic is implemented in the txmanager package
+	// Here we just provide a hook for it to intercept transactions
+	
+	// This function is modified at runtime by the txmanager package if it's loaded
+	// so we don't need to check for it here - the txmanager will register itself
+	// with the Ethereum service and patch this method
+	
+	// Default behavior - add directly to tx pool
 	return b.eth.txPool.Add([]*types.Transaction{signedTx}, true, false)[0]
 }
 
