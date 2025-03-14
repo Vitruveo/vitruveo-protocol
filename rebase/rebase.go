@@ -78,6 +78,11 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 	epoch := last.Epoch
 	epochTx := last.EpochTx
 	rbx := last.Rbx
+	// Verificar e corrigir rbx se for zero
+	if rbx == 0 {
+		log.Warn("ProcessRebase: Detectado Rbx zero, usando valor padrão")
+		rbx = DIVISOR.Uint64()
+	}
 	rbxEpoch := last.RbxEpoch
 	supply := GetRebasedAmount(INITIAL_SUPPLY, rbx)
 	perks := big.NewInt(0)
@@ -108,6 +113,9 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 			} else {
 				log.Warn("ProcessRebase: Proteção contra interesse inválido", "interest", interest)
 			}
+
+			// Recalcular o supply com o novo valor de rbx após o rebase
+			supply = GetRebasedAmount(INITIAL_SUPPLY, rbx)
 
 			log.Warn("Rebase Success 🎉🎉🎉", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "Ratio", txRatio, "Supply", supply)
 		} else {

@@ -787,13 +787,16 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 	// Determine the Rbx value to use for transaction applying
 	currentRbx := env.header.Rbx
 	
-	// If header Rbx is zero (which should never happen with our fixes), try to recover from previous block
+	// If header Rbx is zero (which should never happen with our fixes), try to recover the correct Rbx value
 	if currentRbx == 0 {
 		log.Warn("Header with zero Rbx value detected during transaction application", 
 			"block", env.header.Number, "hash", env.header.Hash())
 			
 		blockNumber := env.header.Number.Uint64()
+		
+		// Special handling for the block immediately after a rebase
 		prevBlockNumber := blockNumber - 1
+		
 		var prevBlock *types.Block
 		for {
 			prevBlock = w.chain.GetBlockByNumber(prevBlockNumber)
@@ -802,11 +805,22 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 			}
 			prevBlockNumber--
 		}
+		
 		if prevBlock != nil && prevBlock.Header() != nil {
-			currentRbx = prevBlock.Header().Rbx
-			log.Info("Recovered Rbx value from previous block", 
-				"block", prevBlockNumber, 
-				"rbx", currentRbx)
+			// Try to get the correct Rbx value directly from the chain state
+			currentChainState := w.chain.CurrentHeader()
+			if currentChainState != nil && currentChainState.Rbx > 0 {
+				currentRbx = currentChainState.Rbx
+				log.Info("Using latest Rbx value from chain state", 
+					"block", blockNumber, 
+					"latest_rbx", currentRbx)
+			} else {
+				// Fallback: get from previous block
+				currentRbx = prevBlock.Header().Rbx
+				log.Info("Recovered Rbx value from previous block", 
+					"block", prevBlockNumber, 
+					"rbx", currentRbx)
+			}
 		}
 	}
 
@@ -821,6 +835,9 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 	// Update header Rbx to ensure consistent value
 	if env.header.Rbx == 0 {
 		env.header.Rbx = currentRbx
+		log.Info("Updated header Rbx with recovered value", 
+			"block", env.header.Number,
+			"rbx", currentRbx)
 	}
 
 	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), currentRbx)

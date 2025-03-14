@@ -259,9 +259,23 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 		}
 	}
 
+	// Initialize rebase fields with sensible defaults
+	// Start with empty epoch values that will be properly set by ProcessRebase
 	b.header.Epoch = 0
 	b.header.EpochTx = 0
-	b.header.Rbx = 100000000
+	
+	// For Rbx, prioritize header value if set, then last block's value, finally default
+	if header != nil && header.Rbx > 0 {
+		b.header.Rbx = header.Rbx
+	} else if lastBlockHeader != nil && lastBlockHeader.Rbx > 0 {
+		// Use last block's Rbx as starting point - this ensures post-rebase blocks get correct value
+		b.header.Rbx = lastBlockHeader.Rbx
+	} else {
+		// Fallback to default value only if no better option exists
+		b.header.Rbx = 100000000
+		log.Warn("Using default Rbx value in new block creation - possible initialization", 
+			"blockNum", b.header.Number)
+	}
 
 	if lastBlockHeader != nil {
 		lastRebaseInfo := rebase.RebaseInfo{
