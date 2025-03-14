@@ -863,7 +863,18 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 			"rbx", currentRbx)
 	}
 
-	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), currentRbx)
+	// Log detailed Rbx values before transaction application to help debug merkle root issues
+	log.Debug("Transaction application Rbx values", 
+		"block", env.header.Number, 
+		"tx", tx.Hash().String(), 
+		"header.Rbx", env.header.Rbx,
+		"currentRbx", currentRbx,
+		"epoch", env.header.Epoch,
+		"rbxEpoch", env.header.RbxEpoch)
+	
+	// Make sure we're always using header.Rbx for transaction processing, not the separate currentRbx value
+	// This ensures consistency across all parts of the application
+	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), env.header.Rbx)
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
@@ -1189,6 +1200,35 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 		}
 	}
 	
+	// Log block header Rbx value before FinalizeAndAssemble to track source of merkle issues
+	log.Debug("Rbx value before FinalizeAndAssemble in generateWork", 
+		"block", work.header.Number, 
+		"hash", work.header.Hash().String(),
+		"rbx", work.header.Rbx, 
+		"epoch", work.header.Epoch,
+		"rbxEpoch", work.header.RbxEpoch,
+		"txs", len(work.txs))
+		
+	// Final rbx safety check before assembly
+	if work.header.Rbx == 0 {
+		log.Error("Zero Rbx detected before FinalizeAndAssemble in generateWork - critical error", 
+			"block", work.header.Number)
+		
+		// Force setting a value to avoid immediate failure
+		prevHeader := w.chain.CurrentHeader()
+		if prevHeader != nil && prevHeader.Rbx > 0 {
+			work.header.Rbx = prevHeader.Rbx
+			log.Error("Emergency Rbx recovery in generateWork",
+				"block", work.header.Number,
+				"rbx", work.header.Rbx)
+		} else {
+			work.header.Rbx = rebase.DIVISOR.Uint64()
+			log.Error("Using default Rbx in emergency recovery in generateWork",
+				"block", work.header.Number,
+				"rbx", work.header.Rbx)
+		}
+	}
+	
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, nil, work.receipts, params.withdrawals)
 	if err != nil {
 		return &newPayloadResult{err: err}
@@ -1348,6 +1388,35 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 					"rbxEpoch", rbxEpoch, 
 					"rbx", rbx)
 			}
+		
+		// Additional logging and safety check right before block assembly
+		log.Debug("Rbx value before FinalizeAndAssemble in commit function", 
+			"block", env.header.Number, 
+			"hash", env.header.Hash().String(),
+			"rbx", env.header.Rbx, 
+			"epoch", env.header.Epoch,
+			"rbxEpoch", env.header.RbxEpoch,
+			"txs", len(env.txs))
+			
+		// Final Rbx validation to catch any potential zero value
+		if env.header.Rbx == 0 {
+			log.Error("!!! CRITICAL: Zero Rbx detected right before FinalizeAndAssemble - THIS WILL CAUSE MERKLE ROOT ERRORS !!!", 
+				"block", env.header.Number)
+			
+			// Emergency fallback to prevent merkle root errors
+			parent := w.chain.CurrentHeader()
+			if parent != nil && parent.Rbx > 0 {
+				env.header.Rbx = parent.Rbx
+				log.Error("Emergency Rbx recovery from parent", 
+					"block", env.header.Number, 
+					"rbx", env.header.Rbx)
+			} else {
+				env.header.Rbx = rebase.DIVISOR.Uint64()
+				log.Error("Emergency Rbx recovery using DIVISOR", 
+					"block", env.header.Number, 
+					"rbx", env.header.Rbx)
+			}
+		}
 		
 		// Withdrawals are set to nil here, because this is only called in PoW.
 		block, err := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, nil, env.receipts, nil)

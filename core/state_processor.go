@@ -183,8 +183,36 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 
 	// Always ensure we have a valid Rbx value to prevent merkle root discrepancies
 	if vmenv.Context.Rbx == 0 {
-		log.Warn("RBX value missing in EVM context, applying fix", "block", header.Number, "tx", tx.Hash().String(), "currentRbx", currentRbx)
+		log.Warn("RBX value missing in EVM context, applying fix", 
+			"block", header.Number, 
+			"tx", tx.Hash().String(), 
+			"currentRbx", currentRbx)
 		vmenv.Context.Rbx = currentRbx
+	} else if vmenv.Context.Rbx != header.Rbx {
+		// Critical: Log discrepancy between Context.Rbx and header.Rbx which may cause merkle root errors
+		log.Error("Rbx value mismatch between EVM context and header", 
+			"block", header.Number, 
+			"tx", tx.Hash().String(), 
+			"context.Rbx", vmenv.Context.Rbx, 
+			"header.Rbx", header.Rbx, 
+			"currentRbx", currentRbx)
+		
+		// Force sync with header.Rbx to ensure consistency
+		vmenv.Context.Rbx = header.Rbx
+		log.Error("Forced Rbx synchronization with header value", 
+			"block", header.Number, 
+			"rbx", vmenv.Context.Rbx)
+	}
+	
+	// Extra logging for rebased blocks to track merkle root issues
+	if header.Epoch > 0 || header.RbxEpoch > 0 {
+		log.Debug("Processing transaction with rebase data", 
+			"block", header.Number, 
+			"tx", tx.Hash().String(), 
+			"header.Rbx", header.Rbx,
+			"context.Rbx", vmenv.Context.Rbx,
+			"epoch", header.Epoch,
+			"rbxEpoch", header.RbxEpoch)
 	}
 
 	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)

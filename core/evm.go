@@ -63,8 +63,35 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 	if rbxValue == 0 {
 		// This should never happen in normal operation, but we'll add a fallback
 		// to ensure consistent merkle roots across the network
-		log.Error("Header with zero Rbx value detected", "block", header.Number, "hash", header.Hash())
-		rbxValue = rebase.DIVISOR.Uint64() // Use default value from rebase package
+		log.Error("Header with zero Rbx value detected in NewEVMBlockContext", 
+			"block", header.Number, 
+			"hash", header.Hash(),
+			"epoch", header.Epoch,
+			"rbxEpoch", header.RbxEpoch)
+			
+		// Try to recover from chain state first
+		parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
+		if parent != nil && parent.Rbx > 0 {
+			rbxValue = parent.Rbx
+			log.Error("Recovered Rbx from parent block in NewEVMBlockContext", 
+				"block", header.Number, 
+				"parentBlock", parent.Number, 
+				"rbx", rbxValue)
+		} else {
+			// Last resort fallback
+			rbxValue = rebase.DIVISOR.Uint64() // Use default value from rebase package
+			log.Error("Using default Rbx value in NewEVMBlockContext", 
+				"block", header.Number, 
+				"rbx", rbxValue)
+		}
+	} else if header.Epoch > 0 || header.RbxEpoch > 0 {
+		// Extra logging for blocks with rebase data to track merkle root issues
+		log.Debug("Creating EVM block context with rebase data", 
+			"block", header.Number, 
+			"hash", header.Hash(),
+			"rbx", rbxValue,
+			"epoch", header.Epoch,
+			"rbxEpoch", header.RbxEpoch)
 	}
 
 	return vm.BlockContext{
