@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rebase"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -1140,6 +1141,54 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 		}
 	}
 	
+	// Special handling for rebase transitions - make sure we have the correct Rbx value
+	// before finalizing the block
+	if parent := w.chain.CurrentHeader(); parent != nil {
+		if parent.Epoch < work.header.Epoch || parent.RbxEpoch < work.header.RbxEpoch {
+			log.Info("Handling rebase transition in finalization", 
+				"block", work.header.Number, 
+				"parentEpoch", parent.Epoch,
+				"headerEpoch", work.header.Epoch, 
+				"parentRbxEpoch", parent.RbxEpoch,
+				"headerRbxEpoch", work.header.RbxEpoch)
+				
+			// Force synchronizing Rbx value
+			chainRebaseInfo := rebase.RebaseInfo{
+				Epoch:    parent.Epoch,
+				EpochTx:  parent.EpochTx,
+				Rbx:      parent.Rbx,
+				RbxEpoch: parent.RbxEpoch,
+				Supply:   parent.Supply,
+				Tx:       uint64(len(work.txs)),
+			}
+			
+			// Special safety measure: re-process rebase to get consistent values
+			epoch, epochTx, rbx, rbxEpoch, supply, _ := 
+				rebase.ProcessRebase(work.header.Number, chainRebaseInfo, chainRebaseInfo)
+				
+			// Only update if values are non-zero to avoid breaking existing logic
+			if rbx > 0 {
+				// Ensure we use the latest Rbx value for final assembly
+				work.header.Rbx = rbx
+				log.Info("Updated Rbx value before finalization", 
+					"block", work.header.Number, 
+					"rbx", rbx)
+			}
+			if epoch > 0 {
+				work.header.Epoch = epoch
+			}
+			if rbxEpoch > 0 {
+				work.header.RbxEpoch = rbxEpoch
+			}
+			if epochTx > 0 {
+				work.header.EpochTx = epochTx
+			}
+			if supply != nil && supply.Sign() > 0 {
+				work.header.Supply = supply
+			}
+		}
+	}
+	
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, nil, work.receipts, params.withdrawals)
 	if err != nil {
 		return &newPayloadResult{err: err}
@@ -1240,6 +1289,65 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 				log.Warn("Using default Rbx value in commit function", "block", env.header.Number)
 			}
 		}
+
+			// Check for rebase transition (detect epoch change)
+			parent := w.chain.CurrentHeader()
+			if parent != nil && 
+				((parent.Epoch < env.header.Epoch) || (parent.RbxEpoch < env.header.RbxEpoch)) {
+				
+				log.Info("Detected rebase epoch transition in commit function", 
+					"block", env.header.Number, 
+					"parentEpoch", parent.Epoch, 
+					"headerEpoch", env.header.Epoch,
+					"parentRbxEpoch", parent.RbxEpoch,
+					"headerRbxEpoch", env.header.RbxEpoch)
+					
+				// Create rebase info from chain state
+				lastRebaseInfo := rebase.RebaseInfo{
+					Epoch:    parent.Epoch,
+					EpochTx:  parent.EpochTx,
+					Rbx:      parent.Rbx,
+					RbxEpoch: parent.RbxEpoch,
+					Supply:   parent.Supply,
+					Perks:    parent.Perks,
+					Tx:       0,
+				}
+				currentRebaseInfo := rebase.RebaseInfo{
+					Epoch:    env.header.Epoch,
+					EpochTx:  env.header.EpochTx,
+					Rbx:      env.header.Rbx,
+					RbxEpoch: env.header.RbxEpoch,
+					Supply:   env.header.Supply,
+					Perks:    env.header.Perks,
+					Tx:       uint64(len(env.txs)),
+				}
+				
+				// Recalculate rebase values to ensure consistency across all components
+				epoch, epochTx, rbx, rbxEpoch, supply, perks := 
+					rebase.ProcessRebase(env.header.Number, lastRebaseInfo, currentRebaseInfo)
+					
+				// Check if we need to update Rbx to ensure consistency
+				if rbx > 0 && rbx != env.header.Rbx {
+					log.Warn("Updating Rbx value during rebase in commit function", 
+						"block", env.header.Number, 
+						"oldRbx", env.header.Rbx, 
+						"newRbx", rbx)
+					env.header.Rbx = rbx
+				}
+				
+				// Update other rebase fields for consistency
+				env.header.Epoch = epoch
+				env.header.EpochTx = epochTx
+				env.header.RbxEpoch = rbxEpoch
+				env.header.Supply = supply
+				env.header.Perks = perks
+				
+				log.Info("Rebase field values synchronized in commit function", 
+					"block", env.header.Number, 
+					"epoch", epoch, 
+					"rbxEpoch", rbxEpoch, 
+					"rbx", rbx)
+			}
 		
 		// Withdrawals are set to nil here, because this is only called in PoW.
 		block, err := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, nil, env.receipts, nil)
