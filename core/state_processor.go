@@ -29,7 +29,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rebase"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -111,8 +113,14 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
 
+	// Verify that we have a valid Rbx value - crucial for consistent transaction processing
 	if evm.Context.Rbx == 0 {
-		//log.Error("@@@@APPLY MESSAGE", "rbx", evm.Context.Rbx)
+		log.Error("Zero Rbx value in EVM context during transaction processing", 
+			"tx", tx.Hash().String(), 
+			"block", blockNumber)
+		
+		// Use the DIVISOR value as fallback to ensure consistency
+		evm.Context.Rbx = rebase.DIVISOR.Uint64()
 	}
 
 	// Apply the transaction to the current state (included in the env).
@@ -173,8 +181,9 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	blockContext := NewEVMBlockContext(header, bc, author)
 	vmenv := vm.NewEVM(blockContext, vm.TxContext{BlobHashes: tx.BlobHashes()}, statedb, config, cfg)
 
+	// Always ensure we have a valid Rbx value to prevent merkle root discrepancies
 	if vmenv.Context.Rbx == 0 {
-		//log.Warn("@@@@@@@@@ RBX FIX MADE")
+		log.Warn("RBX value missing in EVM context, applying fix", "block", header.Number, "tx", tx.Hash().String(), "currentRbx", currentRbx)
 		vmenv.Context.Rbx = currentRbx
 	}
 

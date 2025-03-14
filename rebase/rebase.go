@@ -35,12 +35,17 @@ func GetRebasedAmount(amount *big.Int, rbx uint64) *big.Int {
 	if amount.Sign() < 0 {
 		return new(big.Int).Set(common.Big0)
 	}
+	
+	// Verificação de segurança para rbx igual a zero
+	// Se rbx for zero, use o valor padrão do DIVISOR
+	if rbx == 0 {
+		log.Error("Zero rbx value detected in GetRebasedAmount, using default value")
+		rbx = DIVISOR.Uint64()
+	}
 
 	rebasedAmount := new(big.Int).Mul(amount, new(big.Int).SetUint64(rbx))
-	//log.Warn("GetRebased", "rebased", rebasedAmount, "rbx", rbx)
 	rebasedAmount.Div(rebasedAmount, DIVISOR)
 
-	//	log.Info("RebasedAmount", "address", "block", blockNumber, "rebase", rebase, "amount", amount, "rebasedAmount", rebasedAmount)
 	return rebasedAmount
 }
 
@@ -48,6 +53,13 @@ func GetTransferAmount(amount *big.Int, rbx uint64) *big.Int {
 	// Verificação de segurança para valores negativos
 	if amount.Sign() < 0 {
 		return new(big.Int).Set(common.Big0)
+	}
+	
+	// Verificação de segurança para rbx igual a zero
+	// Se rbx for zero, use o valor padrão do DIVISOR
+	if rbx == 0 {
+		log.Error("Zero rbx value detected in GetTransferAmount, using default value")
+		rbx = DIVISOR.Uint64()
 	}
 
 	expandAmount := new(big.Int).Mul(amount, DIVISOR)

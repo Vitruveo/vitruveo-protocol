@@ -3,6 +3,8 @@
 package txmanager
 
 import (
+	"bytes"
+	"sort"
 	"sync"
 	"time"
 
@@ -170,8 +172,20 @@ func (tm *TxManager) processQueues() {
 		log.Info("Throttling transactions due to approaching rebase block")
 	}
 	
-	// Coletar transações de cada conta respeitando os limites
-	for addr, txs := range tm.queue {
+	// Ordenar contas por endereço para garantir consistência na ordem das transações
+	// Isso é crucial para evitar discrepâncias no merkle root
+	var addresses []common.Address
+	for addr := range tm.queue {
+		addresses = append(addresses, addr)
+	}
+	// Ordenação determinística por endereço
+	sort.Slice(addresses, func(i, j int) bool {
+		return bytes.Compare(addresses[i].Bytes(), addresses[j].Bytes()) < 0
+	})
+
+	// Processar as contas em ordem determinística
+	for _, addr := range addresses {
+		txs := tm.queue[addr]
 		if len(txs) == 0 {
 			delete(tm.queue, addr)
 			continue
@@ -202,6 +216,13 @@ func (tm *TxManager) processQueues() {
 			if txsToProcess <= 0 {
 				break // Batch cheio
 			}
+		}
+		
+		// Ordenar transações por nonce para garantir consistência
+		if txsToProcess > 1 {
+			sort.Slice(txs[:txsToProcess], func(i, j int) bool {
+				return txs[i].Nonce() < txs[j].Nonce()
+			})
 		}
 		
 		// Adicionar transações ao batch

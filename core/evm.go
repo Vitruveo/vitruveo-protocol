@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rebase"
 )
 
@@ -56,8 +57,14 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 	if header.Difficulty.Cmp(common.Big0) == 0 {
 		random = &header.MixDigest
 	}
-	if header.Rbx == 0 {
-		//log.Error("@@@ BLOCK CONTEXT", "header", header)
+	
+	// Ensure the header has a valid Rbx value
+	rbxValue := header.Rbx
+	if rbxValue == 0 {
+		// This should never happen in normal operation, but we'll add a fallback
+		// to ensure consistent merkle roots across the network
+		log.Error("Header with zero Rbx value detected", "block", header.Number, "hash", header.Hash())
+		rbxValue = rebase.DIVISOR.Uint64() // Use default value from rebase package
 	}
 
 	return vm.BlockContext{
@@ -70,10 +77,8 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 		Difficulty:  new(big.Int).Set(header.Difficulty),
 		BaseFee:     baseFee,
 		GasLimit:    header.GasLimit,
-
-		Rbx: header.Rbx,
-
-		Random:        random,
+		Rbx:         rbxValue,
+		Random:      random,
 		ExcessBlobGas: header.ExcessBlobGas,
 	}
 }
