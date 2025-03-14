@@ -259,28 +259,59 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 		}
 	}
 
-	// Initialize rebase fields with sensible defaults
-	// Start with empty epoch values that will be properly set by ProcessRebase
-	b.header.Epoch = 0
-	b.header.EpochTx = 0
-	
+	// CRITICAL: Initialize rebase fields consistently to avoid merkle root issues
+	// First, ensure we have a valid Rbx value before doing anything else
 	// For Rbx, prioritize header value if set, then last block's value, finally default
+	var initialRbx uint64
+	
 	if header != nil && header.Rbx > 0 {
-		b.header.Rbx = header.Rbx
+		initialRbx = header.Rbx
+		log.Debug("Using header Rbx value for new block", 
+			"block", b.header.Number, 
+			"rbx", initialRbx)
 	} else if lastBlockHeader != nil && lastBlockHeader.Rbx > 0 {
 		// Use last block's Rbx as starting point - this ensures post-rebase blocks get correct value
-		b.header.Rbx = lastBlockHeader.Rbx
+		initialRbx = lastBlockHeader.Rbx
+		log.Debug("Using parent block Rbx value for new block", 
+			"block", b.header.Number, 
+			"parentBlock", lastBlockHeader.Number,
+			"rbx", initialRbx)
 	} else {
 		// Fallback to default value only if no better option exists
-		b.header.Rbx = 100000000
-		log.Warn("Using default Rbx value in new block creation - possible initialization", 
-			"blockNum", b.header.Number)
+		initialRbx = 100000000 // rebase.DIVISOR.Uint64()
+		log.Warn("FALLBACK: Using default Rbx value in new block creation", 
+			"block", b.header.Number,
+			"rbx", initialRbx)
 	}
-
+	
+	// Set the initial Rbx value to ensure it's never zero
+	b.header.Rbx = initialRbx
+	
+	// Initialize other rebase fields from parent or defaults
 	if lastBlockHeader != nil {
-		// Save original Rbx value before processing rebase
+		// Initialize epoch values from parent to ensure consistency
+		b.header.Epoch = lastBlockHeader.Epoch
+		b.header.EpochTx = lastBlockHeader.EpochTx
+		b.header.RbxEpoch = lastBlockHeader.RbxEpoch
+		
+		// Initialize supply and perks - will be updated by ProcessRebase if needed
+		if lastBlockHeader.Supply != nil {
+			b.header.Supply = new(big.Int).Set(lastBlockHeader.Supply)
+		} else {
+			b.header.Supply = rebase.GetRebasedAmount(rebase.INITIAL_SUPPLY, initialRbx)
+		}
+		
+		if lastBlockHeader.Perks != nil {
+			b.header.Perks = new(big.Int).Set(lastBlockHeader.Perks)
+		} else {
+			b.header.Perks = big.NewInt(0)
+		}
+		
+		// Now process rebase to see if we need to update any values
+		// First save original Rbx value for logging
 		originalRbx := b.header.Rbx
 		
+		// Create rebase info structures
 		lastRebaseInfo := rebase.RebaseInfo{
 			Epoch:    lastBlockHeader.Epoch,
 			EpochTx:  lastBlockHeader.EpochTx,
@@ -290,6 +321,8 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 			Perks:    lastBlockHeader.Perks,
 			Tx:       0,
 		}
+		
+		// Current values come from what we've already set in the header
 		currentRebaseInfo := rebase.RebaseInfo{
 			Epoch:    b.header.Epoch,
 			EpochTx:  b.header.EpochTx,
@@ -299,24 +332,68 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 			Perks:    b.header.Perks,
 			Tx:       uint64(len(txs)),
 		}
-		epoch, epochTx, rbx, rbxEpoch, supply, perks := rebase.ProcessRebase(b.header.Number, lastRebaseInfo, currentRebaseInfo)
+		
+		// Process the rebase to see if values need to be updated
+		epoch, epochTx, rbx, rbxEpoch, supply, perks := 
+			rebase.ProcessRebase(b.header.Number, lastRebaseInfo, currentRebaseInfo)
 
-		b.header.EpochTx = epochTx
+		// IMPORTANT: Special handling for blocks at epoch boundaries
+		// Check if this block is at an epoch boundary (which is when rebases happen)
+		if b.header.Number.Uint64() > 0 && b.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0 {
+			log.Info("Block is at epoch boundary - checking for rebase", 
+				"block", b.header.Number,
+				"originalRbx", originalRbx,
+				"newRbx", rbx)
+		}
+
+		// Update the header with the new values from ProcessRebase
 		b.header.Epoch = epoch
-		b.header.Rbx = rbx
+		b.header.EpochTx = epochTx
 		b.header.RbxEpoch = rbxEpoch
+		b.header.Rbx = rbx
 		b.header.Supply = supply
 		b.header.Perks = perks
 		
 		// Log if there was a rebase event (Rbx value changed)
 		if originalRbx != b.header.Rbx {
+			log.Warn("Rebase Success 🎉🎉🎉", 
+				"Epoch", epoch, 
+				"RbxEpoch", rbxEpoch, 
+				"Rbx", rbx, 
+				"Ratio", (rebase.INTEREST_PER_EPOCH - rebase.UINT64_DIVISOR) / 4 + rebase.UINT64_DIVISOR,
+				"Supply", supply)
+				
 			log.Info("Rebase occurred - Rbx value updated", 
 				"block", b.header.Number, 
 				"old_rbx", originalRbx, 
 				"new_rbx", b.header.Rbx)
 		}
 
-		log.Info("Rebase info 💰", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "EpochTx", epochTx)
+		// Always log rebase info for debugging
+		log.Info("Rebase info 💰", 
+			"Epoch", epoch, 
+			"RbxEpoch", rbxEpoch, 
+			"Rbx", rbx, 
+			"EpochTx", epochTx)
+	} else {
+		// No parent header - initialize with safe defaults
+		b.header.Epoch = 1
+		b.header.EpochTx = 0
+		b.header.RbxEpoch = 0
+		b.header.Supply = rebase.GetRebasedAmount(rebase.INITIAL_SUPPLY, initialRbx)
+		b.header.Perks = big.NewInt(0)
+		
+		log.Warn("Initializing block with default rebase values - no parent block",
+			"block", b.header.Number,
+			"rbx", b.header.Rbx)
+	}
+	
+	// Final safety check to ensure Rbx is never zero
+	if b.header.Rbx == 0 {
+		b.header.Rbx = 100000000 // rebase.DIVISOR.Uint64()
+		log.Error("CRITICAL FAULT: Zero Rbx detected after initialization, using default value",
+			"block", b.header.Number,
+			"rbx", b.header.Rbx)
 	}
 	return b
 }

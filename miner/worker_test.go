@@ -453,7 +453,7 @@ func testGetSealingWork(t *testing.T, chainConfig *params.ChainConfig, engine co
 	// This API should work even when the automatic sealing is not enabled
 	for _, c := range cases {
 		r := w.getSealingBlock(&generateParams{
-			parentHash:  c.parent,
+			parentHeaderHash:  c.parent,
 			timestamp:   timestamp,
 			coinbase:    c.coinbase,
 			random:      c.random,
@@ -478,7 +478,7 @@ func testGetSealingWork(t *testing.T, chainConfig *params.ChainConfig, engine co
 	w.start()
 	for _, c := range cases {
 		r := w.getSealingBlock(&generateParams{
-			parentHash:  c.parent,
+			parentHeaderHash:  c.parent,
 			timestamp:   timestamp,
 			coinbase:    c.coinbase,
 			random:      c.random,

@@ -182,7 +182,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 	emptyParams := &generateParams{
 		timestamp:   args.Timestamp,
 		forceTime:   true,
-		parentHash:  args.Parent,
+		parentHeaderHash:  args.Parent,
 		coinbase:    args.FeeRecipient,
 		random:      args.Random,
 		withdrawals: args.Withdrawals,
@@ -213,7 +213,7 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 		fullParams := &generateParams{
 			timestamp:   args.Timestamp,
 			forceTime:   true,
-			parentHash:  args.Parent,
+			parentHeaderHash:  args.Parent,
 			coinbase:    args.FeeRecipient,
 			random:      args.Random,
 			withdrawals: args.Withdrawals,
