@@ -278,6 +278,9 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 	}
 
 	if lastBlockHeader != nil {
+		// Save original Rbx value before processing rebase
+		originalRbx := b.header.Rbx
+		
 		lastRebaseInfo := rebase.RebaseInfo{
 			Epoch:    lastBlockHeader.Epoch,
 			EpochTx:  lastBlockHeader.EpochTx,
@@ -298,12 +301,20 @@ func NewBlock(lastBlockHeader *Header, header *Header, txs []*Transaction, uncle
 		}
 		epoch, epochTx, rbx, rbxEpoch, supply, perks := rebase.ProcessRebase(b.header.Number, lastRebaseInfo, currentRebaseInfo)
 
-		b.header.EpochTx = epochTx //lastBlockHeader.EpochTx + uint64(len(txs))
+		b.header.EpochTx = epochTx
 		b.header.Epoch = epoch
 		b.header.Rbx = rbx
 		b.header.RbxEpoch = rbxEpoch
 		b.header.Supply = supply
 		b.header.Perks = perks
+		
+		// Log if there was a rebase event (Rbx value changed)
+		if originalRbx != b.header.Rbx {
+			log.Info("Rebase occurred - Rbx value updated", 
+				"block", b.header.Number, 
+				"old_rbx", originalRbx, 
+				"new_rbx", b.header.Rbx)
+		}
 
 		log.Info("Rebase info 💰", "Epoch", epoch, "RbxEpoch", rbxEpoch, "Rbx", rbx, "EpochTx", epochTx)
 	}

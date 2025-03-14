@@ -807,19 +807,41 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 		}
 		
 		if prevBlock != nil && prevBlock.Header() != nil {
-			// Try to get the correct Rbx value directly from the chain state
-			currentChainState := w.chain.CurrentHeader()
-			if currentChainState != nil && currentChainState.Rbx > 0 {
-				currentRbx = currentChainState.Rbx
-				log.Info("Using latest Rbx value from chain state", 
+			// Check if we're in a rebase transition by checking for the "Rebase Success" log entry
+			// We need to ensure we use the new rebase value, not the old one
+			
+			// First priority: look at env.header itself for Rbx information from Header()
+			// since it might already have the updated value 
+			if env.header.RbxEpoch > 0 && env.header.Rbx > 0 {
+				currentRbx = env.header.Rbx
+				log.Info("Using header's own Rbx value", 
 					"block", blockNumber, 
 					"latest_rbx", currentRbx)
 			} else {
-				// Fallback: get from previous block
-				currentRbx = prevBlock.Header().Rbx
-				log.Info("Recovered Rbx value from previous block", 
-					"block", prevBlockNumber, 
-					"rbx", currentRbx)
+				// Second priority: use the current chain state
+				currentChainState := w.chain.CurrentHeader()
+				if currentChainState != nil && currentChainState.Rbx > 0 {
+					// If the current chain header's epoch is greater than previous block's epoch,
+					// we know a rebase occurred and should ensure we're using the correct value
+					if prevBlock.Header().Epoch < currentChainState.Epoch {
+						log.Info("Rebase transition detected, using current header Rbx", 
+							"block", blockNumber, 
+							"latest_rbx", currentChainState.Rbx)
+						currentRbx = currentChainState.Rbx
+					} else {
+						// Normal case - use the chain state Rbx
+						currentRbx = currentChainState.Rbx
+						log.Info("Using latest Rbx value from chain state", 
+							"block", blockNumber, 
+							"latest_rbx", currentRbx)
+					}
+				} else {
+					// Fallback: get from previous block
+					currentRbx = prevBlock.Header().Rbx
+					log.Info("Recovered Rbx value from previous block", 
+						"block", prevBlockNumber, 
+						"rbx", currentRbx)
+				}
 			}
 		}
 	}
@@ -976,12 +998,20 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		GasLimit:   core.CalcGasLimit(parent.GasLimit, w.config.GasCeil),
 		Time:       timestamp,
 		Coinbase:   genParams.coinbase,
-		Epoch:      0,
-		EpochTx:    0,
-		Rbx:        0,
-		RbxEpoch:   0,
-		Supply:     big.NewInt(0),
+		Epoch:      parent.Epoch,
+		EpochTx:    parent.EpochTx,
+		Rbx:        parent.Rbx, // Initialize with parent Rbx value to avoid zero values
+		RbxEpoch:   parent.RbxEpoch,
+		Supply:     new(big.Int).Set(parent.Supply),
 		Perks:      big.NewInt(0),
+	}
+	
+	// Verify Rbx value is set
+	if header.Rbx == 0 {
+		header.Rbx = 100000000
+		log.Warn("Parent had zero Rbx value in prepareWork, using default", 
+			"block", header.Number, 
+			"parentNumber", parent.Number)
 	}
 	// Set the extra field.
 	if len(w.extra) != 0 {
@@ -1072,6 +1102,18 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 	}
 	defer work.discard()
 
+	// Double-check Rbx value is set correctly to avoid merkle root issues
+	if work.header.Rbx == 0 {
+		parent := w.chain.CurrentHeader()
+		if parent != nil && parent.Rbx > 0 {
+			work.header.Rbx = parent.Rbx
+			log.Info("Fixed zero Rbx in generateWork", "block", work.header.Number, "rbx", work.header.Rbx)
+		} else {
+			work.header.Rbx = 100000000
+			log.Warn("Using default Rbx in generateWork due to zero value", "block", work.header.Number)
+		}
+	}
+
 	if !params.noTxs {
 		interrupt := new(atomic.Int32)
 		timer := time.AfterFunc(w.newpayloadTimeout, func() {
@@ -1084,6 +1126,20 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
 		}
 	}
+	
+	// Re-validate Rbx after transaction processing, in case it was updated during rebase
+	if work.header.Rbx == 0 {
+		log.Warn("Zero Rbx detected before finalization in generateWork", "block", work.header.Number)
+		parent := w.chain.CurrentHeader()
+		if parent != nil && parent.Rbx > 0 {
+			work.header.Rbx = parent.Rbx
+			log.Info("Last minute Rbx recovery in generateWork", "block", work.header.Number, "rbx", work.header.Rbx)
+		} else {
+			work.header.Rbx = 100000000
+			log.Warn("Emergency default Rbx value in generateWork", "block", work.header.Number)
+		}
+	}
+	
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, nil, work.receipts, params.withdrawals)
 	if err != nil {
 		return &newPayloadResult{err: err}
@@ -1172,6 +1228,19 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 		// Create a local environment copy, avoid the data race with snapshot state.
 		// https://github.com/ethereum/go-ethereum/issues/24299
 		env := env.copy()
+		
+		// Ensure Rbx value is preserved and valid before finalizing
+		if env.header.Rbx == 0 {
+			parent := w.chain.CurrentHeader()
+			if parent != nil && parent.Rbx > 0 {
+				env.header.Rbx = parent.Rbx
+				log.Info("Restored Rbx value in commit function", "block", env.header.Number, "rbx", env.header.Rbx)
+			} else {
+				env.header.Rbx = 100000000
+				log.Warn("Using default Rbx value in commit function", "block", env.header.Number)
+			}
+		}
+		
 		// Withdrawals are set to nil here, because this is only called in PoW.
 		block, err := w.engine.FinalizeAndAssemble(w.chain, env.header, env.state, env.txs, nil, env.receipts, nil)
 		if err != nil {
