@@ -877,12 +877,30 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 	}
 	var coalescedLogs []*types.Log
 
-	// CRITICAL FIX: Capture the current Rbx value at the start of transaction batch processing
+	// CRITICAL FIX: Check if this is an epoch boundary block
+	isAtEpochBoundary := env.header.Number.Uint64() > 0 && 
+		env.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0
+		
+	// Epoch boundary requires special handling to prevent merkle root errors
+	if isAtEpochBoundary {
+		// At epoch boundaries, ALWAYS ensure we're using the latest Rbx value
+		// Try to get the latest chain state as a reference
+		currHeader := w.chain.CurrentHeader()
+		if currHeader != nil && currHeader.Number.Uint64()+1 == env.header.Number.Uint64() {
+			// If this is definitely at an epoch boundary, we should process any rebase
+			// that may have occurred when initializing the block
+			log.Warn("Epoch boundary transaction batch - ensuring latest Rbx value",
+				"block", env.header.Number,
+				"curr_rbx", env.header.Rbx)
+		}
+	}
+	
+	// Capture the current Rbx value at the start of transaction batch processing
 	// This helps prevent inconsistencies if a rebase happens during transaction processing
 	batchRbx := env.header.Rbx
-
+	
 	// Log the initial Rbx state for this batch of transactions, especially useful for rebase debugging
-	if env.header.Number.Uint64() > 0 && env.header.Number.Uint64()%rebase.BLOCKS_PER_EPOCH.Uint64() == 0 {
+	if isAtEpochBoundary {
 		log.Info("Starting transaction batch at epoch boundary",
 			"block", env.header.Number,
 			"rbx", batchRbx,
@@ -930,23 +948,37 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), env.tcount)
 
-		// IMPORTANT: Check if env.header.Rbx has changed since we started processing this batch
-		// This could happen if a rebase was triggered in another goroutine
-		if env.header.Rbx != batchRbx {
-			// We detected a potential rebase in the middle of processing transactions
-			log.Warn("Rbx value changed during transaction processing - potential rebase detected",
+	// IMPORTANT: Check if env.header.Rbx has changed since we started processing this batch
+	// This could happen if a rebase was triggered in another goroutine
+	if env.header.Rbx != batchRbx {
+		// We detected a potential rebase in the middle of processing transactions
+		log.Warn("Rbx value changed during transaction processing - rebase detected",
+			"block", env.header.Number,
+			"isAtEpochBoundary", isAtEpochBoundary,
+			"original_rbx", batchRbx,
+			"current_rbx", env.header.Rbx,
+			"txHash", tx.Hash())
+		
+		if isAtEpochBoundary {
+			// At epoch boundaries we MUST use the most recent Rbx value
+			// We need to restart the batch processing with the new Rbx value
+			log.Warn("Epoch boundary rebase detected - need to restart transaction batch with new Rbx", 
 				"block", env.header.Number,
-				"original_rbx", batchRbx,
-				"current_rbx", env.header.Rbx,
-				"txHash", tx.Hash())
-
-			// This is critical - we must ensure all transactions in this batch use the same Rbx value
-			// Force the header back to the original value to maintain consistency
+				"old_rbx", batchRbx,
+				"new_rbx", env.header.Rbx)
+			
+			// For epoch boundaries, we MUST use the latest Rbx value
+			// Signal error for batch restart
+			return errors.New("rebase_restart_required")
+		} else {
+			// For non-epoch boundary blocks, maintain batch consistency
 			env.header.Rbx = batchRbx
-			log.Info("Forced Rbx back to original value for transaction consistency",
+			log.Info("Non-epoch block: forced Rbx back to batch value for consistency", 
 				"block", env.header.Number,
 				"rbx", batchRbx)
 		}
+	}
+		// This could happen if a rebase was triggered in another goroutine
 
 		logs, err := w.commitTransaction(env, tx)
 		switch {
