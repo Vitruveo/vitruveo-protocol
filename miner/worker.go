@@ -881,18 +881,13 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 	isAtEpochBoundary := env.header.Number.Uint64() > 0 && 
 		env.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0
 		
-	// Epoch boundary requires special handling to prevent merkle root errors
+	// SHORT-TERM SOLUTION: Skip adding transactions at epoch boundaries
 	if isAtEpochBoundary {
-		// At epoch boundaries, ALWAYS ensure we're using the latest Rbx value
-		// Try to get the latest chain state as a reference
-		currHeader := w.chain.CurrentHeader()
-		if currHeader != nil && currHeader.Number.Uint64()+1 == env.header.Number.Uint64() {
-			// If this is definitely at an epoch boundary, we should process any rebase
-			// that may have occurred when initializing the block
-			log.Warn("Epoch boundary transaction batch - ensuring latest Rbx value",
-				"block", env.header.Number,
-				"curr_rbx", env.header.Rbx)
-		}
+		log.Warn("Skipping transactions at epoch boundary in commitTransactions",
+			"block", env.header.Number,
+			"epoch", env.header.Epoch,
+			"rbx", env.header.Rbx)
+		return nil
 	}
 	
 	// Capture the current Rbx value at the start of transaction batch processing
@@ -1131,6 +1126,19 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 // into the given sealing block. The transaction selection and ordering strategy can
 // be customized with the plugin in the future.
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) error {
+	// SHORT-TERM SOLUTION: Check if current block is at epoch boundary
+	isAtEpochBoundary := env.header.Number.Uint64() > 0 && 
+		env.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0
+	
+	// Skip adding transactions at epoch boundaries to prevent merkle root errors
+	if isAtEpochBoundary {
+		log.Warn("Skipping transactions at epoch boundary to prevent merkle root errors",
+			"block", env.header.Number,
+			"epoch", env.header.Epoch,
+			"rbx", env.header.Rbx)
+		return nil
+	}
+	
 	pending := w.eth.TxPool().Pending(true)
 
 	// Split the pending transactions into locals and remotes.
@@ -1193,15 +1201,27 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 
 	// Now that we have established a valid Rbx value, we can process transactions
 	if !params.noTxs {
-		interrupt := new(atomic.Int32)
-		timer := time.AfterFunc(w.newpayloadTimeout, func() {
-			interrupt.Store(commitInterruptTimeout)
-		})
-		defer timer.Stop()
+		// SHORT-TERM SOLUTION: Check if this is an epoch boundary block
+		isAtEpochBoundary := work.header.Number.Uint64() > 0 && 
+			work.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0
+			
+		// For epoch boundaries, skip adding transactions to prevent merkle root errors
+		if isAtEpochBoundary {
+			log.Warn("Skipping transactions at epoch boundary in generateWork",
+				"block", work.header.Number,
+				"epoch", work.header.Epoch,
+				"rbx", work.header.Rbx)
+		} else {
+			interrupt := new(atomic.Int32)
+			timer := time.AfterFunc(w.newpayloadTimeout, func() {
+				interrupt.Store(commitInterruptTimeout)
+			})
+			defer timer.Stop()
 
-		err := w.fillTransactions(interrupt, work)
-		if errors.Is(err, errBlockInterruptedByTimeout) {
-			log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
+			err := w.fillTransactions(interrupt, work)
+			if errors.Is(err, errBlockInterruptedByTimeout) {
+				log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
+			}
 		}
 	}
 
@@ -1502,7 +1522,7 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 		isEpochBoundary := false
 		if env.header.Number.Uint64() > 0 && env.header.Number.Uint64()%rebase.BLOCKS_PER_EPOCH.Uint64() == 0 {
 			isEpochBoundary = true
-			log.Info("Block is at epoch boundary in commit function",
+			log.Info("Block is at epoch boundary in commit function - no transactions will be included due to short-term solution",
 				"block", env.header.Number,
 				"rbx", env.header.Rbx)
 		}
