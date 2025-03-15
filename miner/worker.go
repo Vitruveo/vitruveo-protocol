@@ -786,9 +786,14 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 		gp   = env.gasPool.Gas()
 	)
 	
+	// CRITICAL FIX FOR REBASE: Create a local copy of Rbx at the start of transaction processing
+	// This ensures that this specific transaction uses a consistent value even if the header is
+	// modified by another goroutine during rebase
+	txRbx := env.header.Rbx
+	
 	// CRITICAL CHANGE: Always ensure header.Rbx is properly set before any transaction processing
 	// This is the most important fix to ensure consistency throughout the entire block processing pipeline
-	if env.header.Rbx == 0 {
+	if txRbx == 0 {
 		// Log this as an error - it should never happen with our fixes, but we need to handle it
 		log.Error("CRITICAL: Zero Rbx value in header during transaction application", 
 			"block", env.header.Number, "hash", env.header.Hash())
@@ -796,10 +801,12 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 		// Try to recover from chain state first (most reliable during normal operation)
 		currentChainState := w.chain.CurrentHeader()
 		if currentChainState != nil && currentChainState.Rbx > 0 {
-			env.header.Rbx = currentChainState.Rbx
+			txRbx = currentChainState.Rbx
+			// Also update header for future operations
+			env.header.Rbx = txRbx 
 			log.Error("Emergency Rbx recovery from chain state", 
 				"block", env.header.Number, 
-				"rbx", env.header.Rbx)
+				"rbx", txRbx)
 		} else {
 			// Try to get from parentHeader block as fallback
 			blockNumber := env.header.Number.Uint64()
@@ -809,11 +816,13 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 			for attempt := 0; attempt < 5; attempt++ { // Limit search depth
 				prevBlock = w.chain.GetBlockByNumber(prevBlockNumber)
 				if prevBlock != nil && prevBlock.Header().Rbx > 0 {
-					env.header.Rbx = prevBlock.Header().Rbx
+					txRbx = prevBlock.Header().Rbx
+					// Also update header for future operations
+					env.header.Rbx = txRbx
 					log.Error("Emergency Rbx recovery from parentHeader block", 
 						"block", env.header.Number, 
 						"parentHeaderBlock", prevBlockNumber,
-						"rbx", env.header.Rbx)
+						"rbx", txRbx)
 					break
 				}
 				if prevBlockNumber <= 2 {
@@ -823,25 +832,37 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 			}
 			
 			// Last resort - use default value
-			if env.header.Rbx == 0 {
-				env.header.Rbx = 100000000 // rebase.DIVISOR.Uint64()
+			if txRbx == 0 {
+				txRbx = 100000000 // rebase.DIVISOR.Uint64()
+				// Also update header for future operations
+				env.header.Rbx = txRbx
 				log.Error("SEVERE: Using default Rbx value - this will likely cause merkle root errors", 
 					"block", env.header.Number, 
-					"default_rbx", env.header.Rbx)
+					"default_rbx", txRbx)
 			}
 		}
 	}
 
 	// Log Rbx value and transaction info to trace the exact transaction processing
-	log.Debug("Transaction processing", 
-		"block", env.header.Number, 
-		"txHash", tx.Hash().String(), 
-		"rbx", env.header.Rbx,
-		"epoch", env.header.Epoch,
-		"rbxEpoch", env.header.RbxEpoch)
+	// Only log at Info level during rebase transitions to help with debugging
+	if env.header.Number.Uint64() > 0 && env.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0 {
+		log.Info("Transaction processing at epoch boundary", 
+			"block", env.header.Number, 
+			"txHash", tx.Hash().String(), 
+			"rbx", txRbx,
+			"epoch", env.header.Epoch,
+			"rbxEpoch", env.header.RbxEpoch)
+	} else {
+		log.Debug("Transaction processing", 
+			"block", env.header.Number, 
+			"txHash", tx.Hash().String(), 
+			"rbx", txRbx)
+	}
 	
-	// SINGLE SOURCE OF TRUTH: Use env.header.Rbx consistently throughout all processing
-	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), env.header.Rbx)
+	// CRITICAL FIX FOR REBASE: Use the captured txRbx value consistently for this transaction
+	// This ensures that even if header.Rbx changes during a rebase in another goroutine,
+	// this specific transaction will complete with a consistent value
+	receipt, err := core.ApplyTransaction(w.chainConfig, w.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, *w.chain.GetVMConfig(), txRbx)
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
@@ -855,6 +876,20 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
 	}
 	var coalescedLogs []*types.Log
+
+	// CRITICAL FIX: Capture the current Rbx value at the start of transaction batch processing
+	// This helps prevent inconsistencies if a rebase happens during transaction processing
+	batchRbx := env.header.Rbx
+	
+	// Log the initial Rbx state for this batch of transactions, especially useful for rebase debugging
+	if env.header.Number.Uint64() > 0 && env.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0 {
+		log.Info("Starting transaction batch at epoch boundary", 
+			"block", env.header.Number, 
+			"rbx", batchRbx,
+			"epoch", env.header.Epoch,
+			"rbxEpoch", env.header.RbxEpoch,
+			"txCount", len(env.txs))
+	}
 
 	for {
 		// Check interruption signal and abort building if it's fired.
@@ -894,6 +929,24 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 
 		// Start executing the transaction
 		env.state.SetTxContext(tx.Hash(), env.tcount)
+
+		// IMPORTANT: Check if env.header.Rbx has changed since we started processing this batch
+		// This could happen if a rebase was triggered in another goroutine
+		if env.header.Rbx != batchRbx {
+			// We detected a potential rebase in the middle of processing transactions
+			log.Warn("Rbx value changed during transaction processing - potential rebase detected", 
+				"block", env.header.Number,
+				"original_rbx", batchRbx,
+				"current_rbx", env.header.Rbx,
+				"txHash", tx.Hash())
+				
+			// This is critical - we must ensure all transactions in this batch use the same Rbx value
+			// Force the header back to the original value to maintain consistency
+			env.header.Rbx = batchRbx
+			log.Info("Forced Rbx back to original value for transaction consistency", 
+				"block", env.header.Number,
+				"rbx", batchRbx)
+		}
 
 		logs, err := w.commitTransaction(env, tx)
 		switch {
@@ -1149,7 +1202,16 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 		
 		// If a rebase is happening, we need to ensure the correct Rbx value is used
 		if isRebaseTransition {
-			// Create rebase info from current chain state
+			// CRITICAL FIX: Special handling for rebase transitions
+			log.Info("Processing rebase transition in generateWork", 
+				"block", work.header.Number, 
+				"parentEpoch", parentHeader.Epoch,
+				"headerEpoch", work.header.Epoch,
+				"parentRbx", parentHeader.Rbx,
+				"headerRbx", work.header.Rbx,
+				"hasTxs", len(work.txs) > 0)
+			
+			// Create rebase info structures for computation
 			chainRebaseInfo := rebase.RebaseInfo{
 				Epoch:    parentHeader.Epoch,
 				EpochTx:  parentHeader.EpochTx,
@@ -1160,8 +1222,7 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 				Tx:       uint64(len(work.txs)),
 			}
 			
-			// IMPORTANT: Get current rebase info from the work header to preserve any 
-			// updates that happened during transaction processing
+			// Get current values from the work header
 			currentRebaseInfo := rebase.RebaseInfo{
 				Epoch:    work.header.Epoch,
 				EpochTx:  work.header.EpochTx,
@@ -1172,27 +1233,101 @@ func (w *worker) generateWork(params *generateParams) *newPayloadResult {
 				Tx:       uint64(len(work.txs)),
 			}
 			
-			// Process rebase to get the correct values
-			epoch, epochTx, rbx, rbxEpoch, supply, perks := 
-				rebase.ProcessRebase(work.header.Number, chainRebaseInfo, currentRebaseInfo)
-			
-			// CRITICAL: Store original Rbx before updating
-			oldRbx := work.header.Rbx
-			
-			// Update all rebase fields in the header with the new values
-			work.header.Epoch = epoch
-			work.header.EpochTx = epochTx
-			work.header.RbxEpoch = rbxEpoch
-			work.header.Rbx = rbx
-			work.header.Supply = supply
-			work.header.Perks = perks
-			
-			// Log if Rbx value changed to help with debugging
-			if oldRbx != rbx {
-				log.Warn("Rbx value updated during rebase transition", 
+			// CRITICAL FIX: If we have transactions AND we're at an epoch boundary,
+			// we need to be extra careful with the rebase to avoid merkle root issues
+			isAtEpochBoundary := work.header.Number.Uint64() > 0 && 
+							work.header.Number.Uint64() % rebase.BLOCKS_PER_EPOCH.Uint64() == 0
+							
+			if len(work.txs) > 0 && isAtEpochBoundary {
+				log.Warn("Rebase at epoch boundary with transactions - extra care needed", 
 					"block", work.header.Number,
-					"old_rbx", oldRbx,
-					"new_rbx", rbx)
+					"txCount", len(work.txs),
+					"currentRbx", work.header.Rbx)
+					
+				// Get the pre-rebase Rbx value from the parent block
+				preRebaseRbx := parentHeader.Rbx
+				
+				// Process rebase to get the post-rebase values
+				epoch, epochTx, postRebaseRbx, rbxEpoch, supply, perks := 
+					rebase.ProcessRebase(work.header.Number, chainRebaseInfo, currentRebaseInfo)
+				
+				// Log detailed information about the rebase
+				log.Warn("Rebase Success 🎉🎉🎉", 
+					"Epoch", epoch, 
+					"RbxEpoch", rbxEpoch, 
+					"Rbx", postRebaseRbx, 
+					"Ratio", 125,
+					"Supply", supply)
+					
+				// CRITICAL FIX: If the transactions have already been processed with the
+				// pre-rebase Rbx value, we need to keep it consistent for this block to
+				// avoid merkle root mismatches!
+				if originalRbx == preRebaseRbx {
+					log.Warn("Transactions already processed with pre-rebase Rbx - keeping consistent", 
+						"block", work.header.Number,
+						"originalRbx", originalRbx,
+						"newRbx", postRebaseRbx)
+						
+					// We still want to update epoch, rbxEpoch, and supply information
+					// but keep the Rbx value consistent for this block's transactions
+					work.header.Epoch = epoch 
+					work.header.EpochTx = epochTx
+					work.header.RbxEpoch = rbxEpoch
+					work.header.Supply = supply
+					work.header.Perks = perks
+					
+					// SPECIAL CASE: Do NOT update the Rbx value since transactions were
+					// already processed with the pre-rebase value. The next block will
+					// use the post-rebase value.
+					log.Info("Keeping pre-rebase Rbx for transaction consistency", 
+						"block", work.header.Number,
+						"rbx", work.header.Rbx)
+				} else {
+					// Normal case - we can update all fields including Rbx
+					work.header.Epoch = epoch
+					work.header.EpochTx = epochTx
+					work.header.RbxEpoch = rbxEpoch
+					work.header.Rbx = postRebaseRbx
+					work.header.Supply = supply
+					work.header.Perks = perks
+					
+					log.Info("Updated all rebase fields including Rbx", 
+						"block", work.header.Number,
+						"old_rbx", originalRbx,
+						"new_rbx", postRebaseRbx)
+				}
+				
+				log.Info("Rebase occurred - Rbx value updated", 
+					"block", work.header.Number, 
+					"old_rbx", originalRbx, 
+					"new_rbx", work.header.Rbx)
+			} else {
+				// Standard rebase processing without transactions, or outside epoch boundary
+				epoch, epochTx, rbx, rbxEpoch, supply, perks := 
+					rebase.ProcessRebase(work.header.Number, chainRebaseInfo, currentRebaseInfo)
+				
+				// Update all fields
+				oldRbx := work.header.Rbx
+				work.header.Epoch = epoch
+				work.header.EpochTx = epochTx
+				work.header.RbxEpoch = rbxEpoch
+				work.header.Rbx = rbx
+				work.header.Supply = supply
+				work.header.Perks = perks
+				
+				// Log the rebase details
+				if oldRbx != work.header.Rbx {
+					log.Warn("Rebase Success 🎉🎉🎉", 
+						"Epoch", epoch, 
+						"RbxEpoch", rbxEpoch, 
+						"Rbx", rbx, 
+						"Ratio", 125)
+					
+					log.Info("Rebase occurred - Rbx value updated", 
+						"block", work.header.Number, 
+						"old_rbx", oldRbx, 
+						"new_rbx", work.header.Rbx)
+				}
 			}
 		}
 	}
