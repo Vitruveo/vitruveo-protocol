@@ -22,6 +22,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rebase"
 	"github.com/holiman/uint256"
 )
 
@@ -85,8 +86,10 @@ func enable1884(jt *JumpTable) {
 }
 
 func opSelfBalance(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	balance, _ := uint256.FromBig(interpreter.evm.StateDB.GetBalance(scope.Contract.Address()))
-	scope.Stack.push(balance)
+	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
+	rebasedBalance, _ := uint256.FromBig(rebase.GetRebasedAmount(balance, interpreter.evm.Context.Rbx))
+	scope.Stack.push(rebasedBalance)
+	//log.Info("opSelfBalance", "Balance", balance, "Rebased", rebasedBalance)
 	return nil, nil
 }
 
