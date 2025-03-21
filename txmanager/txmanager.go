@@ -33,15 +33,15 @@ type Config struct {
 // TxManager gerencia filas de transações com batching
 type TxManager struct {
 	config Config
-	
+
 	queue      map[common.Address][]*types.Transaction
 	queueMutex sync.Mutex
-	
+
 	// Canal para sinalizar novas transações
 	newTx chan struct{}
 	// Controle de saldo e nonce por conta
 	accounts map[common.Address]*accountInfo
-	
+
 	blockchain *core.BlockChain
 	txpool     *txpool.TxPool
 	wg         sync.WaitGroup
@@ -56,18 +56,18 @@ type accountInfo struct {
 // DefaultConfig retorna a configuração padrão para o gerenciador de transações
 func DefaultConfig() Config {
 	return Config{
-		MaxBatchSize:                  100,
+		MaxBatchSize:                   300,
 		BatchInterval:                  2 * time.Second,
 		MaxTxPerAccountDuringRebase:    5,
 		ThrottleNearRebasing:           true,
-		BlocksBeforeRebasingToThrottle: 10,
+		BlocksBeforeRebasingToThrottle: 5,
 	}
 }
 
 // New cria um novo gerenciador de transações
 func New(txp *txpool.TxPool, blockchain *core.BlockChain, config Config) *TxManager {
 	if config.MaxBatchSize == 0 {
-		config.MaxBatchSize = 100
+		config.MaxBatchSize = 300
 	}
 	if config.BatchInterval == 0 {
 		config.BatchInterval = 2 * time.Second
@@ -76,9 +76,9 @@ func New(txp *txpool.TxPool, blockchain *core.BlockChain, config Config) *TxMana
 		config.MaxTxPerAccountDuringRebase = 5
 	}
 	if config.BlocksBeforeRebasingToThrottle == 0 {
-		config.BlocksBeforeRebasingToThrottle = 10
+		config.BlocksBeforeRebasingToThrottle = 5
 	}
-	
+
 	return &TxManager{
 		config:     config,
 		txpool:     txp,
@@ -93,14 +93,14 @@ func New(txp *txpool.TxPool, blockchain *core.BlockChain, config Config) *TxMana
 // Start inicia o gerenciador de transações
 func (tm *TxManager) Start() error {
 	log.Info("Starting transaction manager with batching support")
-	
+
 	tm.wg.Add(1)
 	go tm.loop()
-	
+
 	// Monitorar novos blocos para resetar contadores de transação
 	tm.wg.Add(1)
 	go tm.monitorBlocks()
-	
+
 	return nil
 }
 
@@ -117,19 +117,19 @@ func (tm *TxManager) AddTransaction(tx *types.Transaction) error {
 	if err != nil {
 		return err
 	}
-	
+
 	tm.queueMutex.Lock()
 	defer tm.queueMutex.Unlock()
-	
+
 	// Adicionar à fila da conta
 	tm.queue[sender] = append(tm.queue[sender], tx)
-	
+
 	// Sinalizar nova transação
 	select {
 	case tm.newTx <- struct{}{}:
 	default:
 	}
-	
+
 	return nil
 }
 
@@ -138,17 +138,17 @@ func (tm *TxManager) isNearRebasing() bool {
 	if !tm.config.ThrottleNearRebasing {
 		return false
 	}
-	
+
 	currentBlock := tm.blockchain.CurrentBlock()
 	if currentBlock == nil {
 		return false
 	}
-	
+
 	// Calcular quantos blocos faltam para o próximo rebasing
 	blockNumber := currentBlock.Number.Uint64()
 	blocksPerEpoch := rebase.BLOCKS_PER_EPOCH.Uint64()
 	blocksUntilNextEpoch := blocksPerEpoch - (blockNumber % blocksPerEpoch)
-	
+
 	return blocksUntilNextEpoch <= uint64(tm.config.BlocksBeforeRebasingToThrottle)
 }
 
@@ -156,14 +156,14 @@ func (tm *TxManager) isNearRebasing() bool {
 func (tm *TxManager) processQueues() {
 	tm.queueMutex.Lock()
 	defer tm.queueMutex.Unlock()
-	
+
 	if len(tm.queue) == 0 {
 		return
 	}
-	
+
 	batch := make([]*types.Transaction, 0, tm.config.MaxBatchSize)
 	batchSize := 0
-	
+
 	// Verificar se estamos próximos do rebasing
 	nearRebasing := tm.isNearRebasing()
 	maxTxPerAccount := tm.config.MaxBatchSize
@@ -171,7 +171,7 @@ func (tm *TxManager) processQueues() {
 		maxTxPerAccount = tm.config.MaxTxPerAccountDuringRebase
 		log.Info("Throttling transactions due to approaching rebase block")
 	}
-	
+
 	// Ordenar contas por endereço para garantir consistência na ordem das transações
 	// Isso é crucial para evitar discrepâncias no merkle root
 	var addresses []common.Address
@@ -190,7 +190,7 @@ func (tm *TxManager) processQueues() {
 			delete(tm.queue, addr)
 			continue
 		}
-		
+
 		// Inicializar informações da conta se necessário
 		if _, exists := tm.accounts[addr]; !exists {
 			nonce := tm.txpool.Nonce(addr)
@@ -199,7 +199,7 @@ func (tm *TxManager) processQueues() {
 				txCount:      0,
 			}
 		}
-		
+
 		// Determinar quantas transações podemos processar desta conta
 		accountInfo := tm.accounts[addr]
 		txsToProcess := len(txs)
@@ -209,7 +209,7 @@ func (tm *TxManager) processQueues() {
 				continue // Já atingiu o limite para esta conta
 			}
 		}
-		
+
 		// Limitar ao tamanho máximo do batch
 		if batchSize+txsToProcess > tm.config.MaxBatchSize {
 			txsToProcess = tm.config.MaxBatchSize - batchSize
@@ -217,38 +217,38 @@ func (tm *TxManager) processQueues() {
 				break // Batch cheio
 			}
 		}
-		
+
 		// Ordenar transações por nonce para garantir consistência
 		if txsToProcess > 1 {
 			sort.Slice(txs[:txsToProcess], func(i, j int) bool {
 				return txs[i].Nonce() < txs[j].Nonce()
 			})
 		}
-		
+
 		// Adicionar transações ao batch
 		batch = append(batch, txs[:txsToProcess]...)
 		batchSize += txsToProcess
-		
+
 		// Atualizar a fila da conta
 		tm.queue[addr] = txs[txsToProcess:]
-		
+
 		// Incrementar contador de transações
 		if nearRebasing {
 			accountInfo.txCount += txsToProcess
 		}
 	}
-	
+
 	// Enviar batch para o pool de transações
 	if len(batch) > 0 {
 		errs := tm.txpool.Add(batch, true, false)
-		
+
 		// Log de erros
 		for i, err := range errs {
 			if err != nil {
 				log.Warn("Failed to add transaction to pool", "tx", batch[i].Hash(), "err", err)
 			}
 		}
-		
+
 		log.Info("Processed transaction batch", "count", len(batch), "near_rebase", nearRebasing)
 	}
 }
@@ -256,10 +256,10 @@ func (tm *TxManager) processQueues() {
 // loop é a rotina principal do gerenciador
 func (tm *TxManager) loop() {
 	defer tm.wg.Done()
-	
+
 	ticker := time.NewTicker(tm.config.BatchInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-tm.newTx:
@@ -275,11 +275,11 @@ func (tm *TxManager) loop() {
 // monitorBlocks monitora novos blocos para resetar contadores
 func (tm *TxManager) monitorBlocks() {
 	defer tm.wg.Done()
-	
+
 	events := make(chan core.ChainHeadEvent, 10)
 	sub := tm.blockchain.SubscribeChainHeadEvent(events)
 	defer sub.Unsubscribe()
-	
+
 	for {
 		select {
 		case <-events:
@@ -287,12 +287,12 @@ func (tm *TxManager) monitorBlocks() {
 			tm.queueMutex.Lock()
 			for addr, info := range tm.accounts {
 				info.txCount = 0
-				
+
 				// Atualizar nonce pendente
 				info.pendingNonce = tm.txpool.Nonce(addr)
 			}
 			tm.queueMutex.Unlock()
-			
+
 		case <-tm.quit:
 			return
 		}
