@@ -552,8 +552,7 @@ func (c *ChainConfig) IsVerkle(num *big.Int, time uint64) bool {
 // IsRebaseHashFork returns whether num is either equal to the RebaseHashForkBlock or greater.
 func (c *ChainConfig) IsRebaseHashFork(num *big.Int) bool {
 	// Hard-coded block number for rebase hash fork (8578866)
-	hardcodedForkBlock := big.NewInt(8578888)
-	
+	hardcodedForkBlock := big.NewInt(10023400)
 
 	// Check either the config setting or the hard-coded value
 	return isBlockForked(c.RebaseHashForkBlock, num) || (num != nil && num.Cmp(hardcodedForkBlock) >= 0)

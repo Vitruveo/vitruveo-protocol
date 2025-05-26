@@ -477,10 +477,10 @@ func (c *Clique) verifySeal(snap *Snapshot, header *types.Header, parents []*typ
 		return errUnauthorizedSigner
 	}
 
-	//log.Warn("@@@CLIQUE RECENT DISABLED ☢️☢️☢️☢️☢️")
+	// log.Warn("@@@CLIQUE RECENT DISABLED ☢️☢️☢️☢️☢️")
 	for seen, recent := range snap.Recents {
 		if recent == signer {
-			//Signer is among recents, only fail if the current block doesn't shift it out
+			// Signer is among recents, only fail if the current block doesn't shift it out
 			if limit := uint64(len(snap.Signers)/2 + 1); seen > number-limit && (number > 150000000) {
 				return errRecentlySigned
 			}
@@ -628,9 +628,9 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 		return errUnauthorizedSigner
 	}
 
-	//log.Warn("@@@CLIQUE RECENT DISABLED ☢️☢️☢️☢️☢️")
+	// log.Warn("@@@CLIQUE RECENT DISABLED ☢️☢️☢️☢️☢️")
 
-	//If we're amongst the recent signers, wait for the next block
+	// If we're amongst the recent signers, wait for the next block
 	for seen, recent := range snap.Recents {
 		if recent == signer {
 			// Signer is among recents, only wait if the current block doesn't shift it out
@@ -739,7 +739,7 @@ func CliqueRLP(header *types.Header) []byte {
 func encodeSigHeader(w io.Writer, header *types.Header) {
 	// Determine if rebase fields should be included based on block number
 	// Hard-coded to include rebase fields only from block 8578866 onward
-	includeRebaseFields := header.Number != nil && header.Number.Uint64() >= 8578888
+	includeRebaseFields := header.Number != nil && header.Number.Uint64() >= 10023400
 
 	// Also check chain configuration as fallback
 	if !includeRebaseFields {
@@ -772,10 +772,10 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		rbx := header.Rbx
 		if rbx == 0 {
 			rbx = 100000000 // Use default value
-			log.Warn("Zero Rbx value detected during signature calculation, using default value", 
+			log.Warn("Zero Rbx value detected during signature calculation, using default value",
 				"block", header.Number, "hash", header.Hash())
 		}
-		
+
 		// Custom rebase fields - include them in signature calculation
 		enc = append(enc, []interface{}{
 			header.Epoch,

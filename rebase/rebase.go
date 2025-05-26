@@ -9,12 +9,16 @@ import (
 
 var BLOCKS_PER_EPOCH = big.NewInt(17280)
 
-const START_TX_GOAL = uint64(9999999)
-const EPOCH_TX_INCREMENT = uint64(500)
-const INTEREST_PER_EPOCH = uint64(100087671)
+const (
+	START_TX_GOAL      = uint64(10000)
+	EPOCH_TX_INCREMENT = uint64(100)
+	INTEREST_PER_EPOCH = uint64(100087671)
+)
 
-var INITIAL_SUPPLY, _ = new(big.Int).SetString("60000000000000000000000000", 10) // 60 million
-var MAX_SUPPLY, _ = new(big.Int).SetString("250000000000000000000000000", 10)    // 250 million
+var (
+	INITIAL_SUPPLY, _ = new(big.Int).SetString("60000000000000000000000000", 10)  // 60 million
+	MAX_SUPPLY, _     = new(big.Int).SetString("250000000000000000000000000", 10) // 250 million
+)
 
 const UINT64_DIVISOR = uint64(100000000)
 
@@ -35,7 +39,7 @@ func GetRebasedAmount(amount *big.Int, rbx uint64) *big.Int {
 	if amount.Sign() < 0 {
 		return new(big.Int).Set(common.Big0)
 	}
-	
+
 	// Verificação de segurança para rbx igual a zero
 	// Se rbx for zero, use o valor padrão do DIVISOR
 	if rbx == 0 {
@@ -54,7 +58,7 @@ func GetTransferAmount(amount *big.Int, rbx uint64) *big.Int {
 	if amount.Sign() < 0 {
 		return new(big.Int).Set(common.Big0)
 	}
-	
+
 	// Verificação de segurança para rbx igual a zero
 	// Se rbx for zero, use o valor padrão do DIVISOR
 	if rbx == 0 {
@@ -127,9 +131,7 @@ func ProcessRebase(blockNumber *big.Int, last RebaseInfo, current RebaseInfo) (u
 		epoch = epoch + 1
 
 	} else {
-
 		epochTx = epochTx + current.Tx
-
 	}
 
 	return epoch, epochTx, rbx, rbxEpoch, supply, perks

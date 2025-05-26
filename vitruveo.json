@@ -10,7 +10,7 @@
     "constantinopleBlock": 0,
     "petersburgBlock": 0,
     "istanbulBlock": 0,
-    "rebaseHashForkBlock": 8578888,
+    "rebaseHashForkBlock": 10023400,
     "clique": {
       "period": 5,
       "epoch": 30000
