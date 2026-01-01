@@ -628,25 +628,18 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 	}
 
 	// -------------------------------------------------------------------------
-	// FIX START: Force explicit empty withdrawals for Shanghai blocks
+	// FIX START: Use Builder Pattern to force empty withdrawals
 	// -------------------------------------------------------------------------
-	// If Shanghai is active (WithdrawalsHash exists) but the body slice is nil,
-	// we must force it to be an empty slice [] instead of nil. 
-	// This prevents "missing withdrawals" errors on syncing nodes.
 	if header.WithdrawalsHash != nil && block.Withdrawals() == nil {
-		block = types.NewBlockWithWithdrawals(
-			header,
-			block.Transactions(),
-			block.Uncles(),
-			block.Receipts(),
-			make([]*types.Withdrawal, 0), // <--- The critical fix: non-nil empty slice
-			trie.NewStackTrie(nil),
-		)
+		// usage: NewBlockWithHeader preserves the existing header (and its valid ReceiptHash)
+		// Then we explicitly attach the body components, ensuring withdrawals are an empty slice.
+		block = types.NewBlockWithHeader(header).
+			WithBody(block.Transactions(), block.Uncles()).
+			WithWithdrawals(make([]*types.Withdrawal, 0))
 	}
 	// -------------------------------------------------------------------------
 	// FIX END
 	// -------------------------------------------------------------------------
-
 	// For 0-period chains, refuse to seal empty blocks (no reward but would spin sealing)
 	if c.config.Period == 0 && len(block.Transactions()) == 0 {
 		return errors.New("sealing paused while waiting for transactions")
