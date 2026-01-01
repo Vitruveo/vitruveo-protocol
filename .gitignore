@@ -22,7 +22,7 @@
 /build/cache/
 /build/bin/
 /geth*.zip
-
+/_data
 # used by the build/ci.go archive + upload tool
 /geth*.tar.gz
 /geth*.tar.gz.sig
