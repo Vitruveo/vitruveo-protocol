@@ -596,22 +596,14 @@ func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Heade
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
 // nor block rewards given, and returns the final block.
 func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt, withdrawals []*types.Withdrawal) (*types.Block, error) {
-	// if len(withdrawals) > 0 {
-	// 	return nil, errors.New("clique does not support withdrawals")
-	// }
-	// Finalize block
-	c.Finalize(chain, header, state, txs, uncles, nil)
+    c.Finalize(chain, header, state, txs, uncles, nil)
+    header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
-	// Assign the final state root to header.
-	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
-
-	// ADDED: Shanghai withdrawals support
-	if chain.Config().IsShanghai(header.Number, header.Time) {
-		header.WithdrawalsHash = &types.EmptyWithdrawalsHash
-	}
-
-	// Assemble and return the final block for sealing.
-	return types.NewBlock(header, txs, nil, receipts, trie.NewStackTrie(nil)), nil
+    if chain.Config().IsShanghai(header.Number, header.Time) {
+        header.WithdrawalsHash = &types.EmptyWithdrawalsHash
+        return types.NewBlockWithWithdrawals(header, txs, nil, receipts, []*types.Withdrawal{}, trie.NewStackTrie(nil)), nil
+    }
+    return types.NewBlock(header, txs, nil, receipts, trie.NewStackTrie(nil)), nil
 }
 
 // Authorize injects a private key into the consensus engine to mint new blocks
