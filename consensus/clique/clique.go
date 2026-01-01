@@ -303,9 +303,18 @@ func (c *Clique) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 	// 	return errors.New("clique does not support shanghai fork")
 	// }
 	// Verify the non-existence of withdrawalsHash.
-	if header.WithdrawalsHash != nil {
-		return fmt.Errorf("invalid withdrawalsHash: have %x, expected nil", header.WithdrawalsHash)
+	// Verify withdrawalsHash - must be nil pre-Shanghai, EmptyWithdrawalsHash post-Shanghai
+	shanghai := chain.Config().IsShanghai(header.Number, header.Time)
+	if shanghai {
+		if header.WithdrawalsHash == nil || *header.WithdrawalsHash != types.EmptyWithdrawalsHash {
+			return fmt.Errorf("invalid withdrawalsHash for shanghai: expected empty hash")
+		}
+	} else {
+		if header.WithdrawalsHash != nil {
+			return fmt.Errorf("invalid withdrawalsHash: have %x, expected nil", header.WithdrawalsHash)
+		}
 	}
+
 	if chain.Config().IsCancun(header.Number, header.Time) {
 		return errors.New("clique does not support cancun fork")
 	}
