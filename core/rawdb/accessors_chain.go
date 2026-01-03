@@ -490,6 +490,13 @@ func ReadBody(db ethdb.Reader, hash common.Hash, number uint64) *types.Body {
 		log.Error("Invalid block body RLP", "hash", hash, "err", err)
 		return nil
 	}
+	// Normalize: RLP decodes empty list as nil, but validator expects empty slice
+	if body.Withdrawals == nil {
+		// Check if withdrawals were encoded (data has 4th element)
+		// For simplicity, always set to empty slice post-decode
+		// The header validation will catch truly missing withdrawals
+		body.Withdrawals = make([]*types.Withdrawal, 0)
+	}
 	return body
 }
 

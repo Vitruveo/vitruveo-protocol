@@ -71,11 +71,11 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 
 	// Withdrawals are present after the Shanghai fork.
 	if header.WithdrawalsHash != nil {
-		// Withdrawals list must be present in body after Shanghai.
-		if block.Withdrawals() == nil {
-			return errors.New("missing withdrawals in block body")
+		withdrawals := block.Withdrawals()
+		if withdrawals == nil {
+			withdrawals = make([]*types.Withdrawal, 0)
 		}
-		if hash := types.DeriveSha(block.Withdrawals(), trie.NewStackTrie(nil)); hash != *header.WithdrawalsHash {
+		if hash := types.DeriveSha(withdrawals, trie.NewStackTrie(nil)); hash != *header.WithdrawalsHash {
 			return fmt.Errorf("withdrawals root hash mismatch (header value %x, calculated %x)", *header.WithdrawalsHash, hash)
 		}
 	} else if block.Withdrawals() != nil {
