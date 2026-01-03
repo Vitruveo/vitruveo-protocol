@@ -17,12 +17,12 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-// CONFIGURATION
+// HOST Configuration
 var (
-	scaatSignerAddress common.Address
+	hostSignerAddress common.Address
 
-	// Real Registry Contract Address
-	RegistryContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
+	// HostRequestsContractAddress is the registry contract for HOST requests
+	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
 )
 
 func init() {
@@ -39,30 +39,30 @@ func init() {
 			for _, c := range candidates {
 				cleaned := strings.Trim(strings.TrimSpace(c), `"'`)
 				if common.IsHexAddress(cleaned) {
-					scaatSignerAddress = common.HexToAddress(cleaned)
-					log.Info("SCAAT INIT: Signer Found", "address", scaatSignerAddress.Hex())
+					hostSignerAddress = common.HexToAddress(cleaned)
+					log.Info("HOST INIT: Signer Found", "address", hostSignerAddress.Hex())
 					return
 				}
 			}
 		}
 	}
-	log.Warn("SCAAT INIT: No signer found (did you use --unlock?)")
+	log.Warn("HOST INIT: No signer found (did you use --unlock?)")
 }
 
-// RunSCAAT executes the precompile logic
-func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+// RunHOST executes the HOST precompile logic
+func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	const gasCost = 25000
 	if suppliedGas < gasCost {
 		return nil, 0, ErrOutOfGas
 	}
 	remainingGas := suppliedGas - gasCost
 
-	// 1. ROBUST INPUT PARSING
+	// 1. Robust Input Parsing
 	var requestIdBytes []byte
 	data := input
 	if len(input) >= 36 {
-		data = input[4:]
-	} // Strip selector if present
+		data = input[4:] // Strip selector if present
+	}
 	if len(data) > 32 {
 		requestIdBytes = data[:32]
 	} else {
@@ -70,22 +70,20 @@ func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error
 	}
 	requestId := new(big.Int).SetBytes(requestIdBytes)
 
-	log.Info("SCAAT EXEC: Lookup", "id", requestId)
+	log.Info("HOST EXEC: Lookup", "id", requestId)
 
 	// 2. Call Registry Contract
-	// Selector for getRequest(uint256)
 	selector := crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
 	calldata := append(selector, common.LeftPadBytes(requestId.Bytes(), 32)...)
 
-	ret, _, err := evm.StaticCall(AccountRef(common.Address{}), RegistryContractAddress, calldata, 100000)
-
+	ret, _, err := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, 100000)
 	if err != nil {
-		log.Warn("SCAAT EXEC: Registry Call Failed", "id", requestId, "err", err)
+		log.Warn("HOST EXEC: Registry Call Failed", "id", requestId, "err", err)
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
 
 	if len(ret) == 0 {
-		log.Warn("SCAAT EXEC: Registry Empty Return (Contract missing or failed)", "id", requestId)
+		log.Warn("HOST EXEC: Registry Empty Return", "id", requestId)
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
 
@@ -118,19 +116,18 @@ func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error
 	}
 
 	// Registry Tuple: (url, payload, headers, nodes, expireTime)
-	// 0x80 (128) is the 5th word, which is expireTime
 	expireTime := new(big.Int).SetBytes(readWord(128))
 
 	// 4. Expiration Check
 	if uint64(time.Now().Unix()) > expireTime.Uint64() {
-		log.Info("SCAAT EXEC: Request Expired", "id", requestId)
+		log.Info("HOST EXEC: Request Expired", "id", requestId)
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
 
 	// 5. Node Selection Check
 	shouldFire := false
-	if scaatSignerAddress != (common.Address{}) {
-		nodesOffsetPtr := readWord(96) // 4th word is nodes array offset
+	if hostSignerAddress != (common.Address{}) {
+		nodesOffsetPtr := readWord(96)
 		nodesOffset := int(new(big.Int).SetBytes(nodesOffsetPtr).Uint64())
 
 		if nodesOffset+32 <= len(ret) {
@@ -139,7 +136,7 @@ func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error
 			for i := 0; i < count; i++ {
 				p := startPos + (i * 32)
 				if p+32 <= len(ret) {
-					if common.BytesToAddress(ret[p+12:p+32]) == scaatSignerAddress {
+					if common.BytesToAddress(ret[p+12:p+32]) == hostSignerAddress {
 						shouldFire = true
 						break
 					}
@@ -155,14 +152,10 @@ func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error
 		headersBytes, _ := readDynamic(readWord(64))
 
 		if urlBytes != nil {
-			url := string(urlBytes)
-			payloadCopy := common.CopyBytes(payload)
-			headers := string(headersBytes)
-
-			go fireWebhook(url, payloadCopy, headers, requestId)
+			go fireWebhook(string(urlBytes), common.CopyBytes(payload), string(headersBytes), requestId)
 		}
 	} else {
-		log.Info("SCAAT EXEC: Node not selected", "id", requestId)
+		log.Info("HOST EXEC: Node not selected", "id", requestId)
 	}
 
 	return math.PaddedBigBytes(requestId, 32), remainingGas, nil
@@ -171,7 +164,7 @@ func RunSCAAT(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error
 func fireWebhook(url string, payload []byte, headersStr string, requestId *big.Int) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("SCAAT WEBHOOK: PANIC", "err", r)
+			log.Error("HOST WEBHOOK: PANIC", "err", r)
 		}
 	}()
 
@@ -180,13 +173,11 @@ func fireWebhook(url string, payload []byte, headersStr string, requestId *big.I
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		log.Error("SCAAT WEBHOOK: Creation Failed", "err", err)
+		log.Error("HOST WEBHOOK: Creation Failed", "err", err)
 		return
 	}
 
 	req.Header.Set("X-Chain-Request-ID", requestId.String())
-	// Note: We don't force Content-Type anymore, letting the registry headers handle it.
-	// Default fallback if needed:
 	if !strings.Contains(strings.ToLower(headersStr), "content-type") {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -208,10 +199,10 @@ func fireWebhook(url string, payload []byte, headersStr string, requestId *big.I
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Error("SCAAT WEBHOOK: Network Error", "err", err)
+		log.Error("HOST WEBHOOK: Network Error", "err", err)
 		return
 	}
 	defer resp.Body.Close()
 
-	log.Info("SCAAT WEBHOOK: SUCCESS", "status", resp.StatusCode, "id", requestId)
+	log.Info("HOST WEBHOOK: SUCCESS", "status", resp.StatusCode, "id", requestId)
 }

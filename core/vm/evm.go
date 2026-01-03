@@ -27,6 +27,9 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// HostPrecompileAddress is the address for the HOST (HTTP Outbound Service Trigger) precompile
+var HostPrecompileAddress = common.HexToAddress("0x0000000000000000000000000000000000000099")
+
 type (
 	// CanTransferFunc is the signature of a transfer guard function
 	CanTransferFunc func(StateDB, common.Address, *uint256.Int) bool
@@ -177,10 +180,10 @@ func (evm *EVM) Interpreter() *EVMInterpreter {
 // the necessary steps to create accounts and reverses the state in case of an
 // execution error or failed value transfer.
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error) {
-	// SCAAT INTERCEPTION HOOK (CALL)
+	// HOST INTERCEPTION HOOK (CALL)
 	// Placed at the very top to bypass EIP-158 empty account checks
-	if addr == common.HexToAddress("0x0000000000000000000000000000000000000099") {
-		return RunSCAAT(evm, input, gas)
+	if addr == HostPrecompileAddress {
+		return RunHOST(evm, input, gas)
 	}
 
 	// Fail if we're trying to execute above the call depth limit
@@ -270,9 +273,9 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 // CallCode differs from Call in the sense that it executes the given address'
 // code with the caller as context.
 func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error) {
-	// SCAAT INTERCEPTION HOOK (CALLCODE)
-	if addr == common.HexToAddress("0x0000000000000000000000000000000000000099") {
-		return RunSCAAT(evm, input, gas)
+	// HOST INTERCEPTION HOOK (CALLCODE)
+	if addr == HostPrecompileAddress {
+		return RunHOST(evm, input, gas)
 	}
 
 	// Fail if we're trying to execute above the call depth limit
@@ -323,9 +326,9 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 // DelegateCall differs from CallCode in the sense that it executes the given address'
 // code with the caller as context and the caller is set to the caller of the caller.
 func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
-	// SCAAT INTERCEPTION HOOK (DELEGATECALL)
-	if addr == common.HexToAddress("0x0000000000000000000000000000000000000099") {
-		return RunSCAAT(evm, input, gas)
+	// HOST INTERCEPTION HOOK (DELEGATECALL)
+	if addr == HostPrecompileAddress {
+		return RunHOST(evm, input, gas)
 	}
 
 	// Fail if we're trying to execute above the call depth limit
@@ -371,10 +374,10 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 // Opcodes that attempt to perform such modifications will result in exceptions
 // instead of performing the modifications.
 func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
-	// SCAAT INTERCEPTION HOOK (STATICCALL)
+	// HOST INTERCEPTION HOOK (STATICCALL)
 	// Placed at the very top to bypass EIP-158 empty account checks
-	if addr == common.HexToAddress("0x0000000000000000000000000000000000000099") {
-		return RunSCAAT(evm, input, gas)
+	if addr == HostPrecompileAddress {
+		return RunHOST(evm, input, gas)
 	}
 
 	// Fail if we're trying to execute above the call depth limit
