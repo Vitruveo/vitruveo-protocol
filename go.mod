@@ -15,6 +15,7 @@ require (
 	github.com/cloudflare/cloudflare-go v0.79.0
 	github.com/cockroachdb/pebble v0.0.0-20230928194634-aa077af62593
 	github.com/consensys/gnark-crypto v0.12.1
+	github.com/cosmos/ics23/go v0.10.0
 	github.com/crate-crypto/go-ipa v0.0.0-20231025140028-3c0104f4b233
 	github.com/crate-crypto/go-kzg-4844 v0.7.0
 	github.com/davecgh/go-spew v1.1.1
@@ -29,12 +30,13 @@ require (
 	github.com/gballet/go-libpcsclite v0.0.0-20190607065134-2772fd86a8ff
 	github.com/gballet/go-verkle v0.1.1-0.20231031103413-a67434b50f46
 	github.com/gofrs/flock v0.8.1
+	github.com/gogo/protobuf v1.3.2
 	github.com/golang-jwt/jwt/v4 v4.5.0
 	github.com/golang/protobuf v1.5.3
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb
 	github.com/google/gofuzz v1.2.0
 	github.com/google/uuid v1.3.0
-	github.com/gorilla/websocket v1.4.2
+	github.com/gorilla/websocket v1.5.0
 	github.com/graph-gophers/graphql-go v1.3.0
 	github.com/hashicorp/go-bexpr v0.1.10
 	github.com/holiman/billy v0.0.0-20240216141850-2abb0c79d3c4
@@ -54,12 +56,13 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/peterh/liner v1.1.1-0.20190123174540-a2c9a5303de7
 	github.com/protolambda/bls12-381-util v0.0.0-20220416220906-d8552aa452c7
-	github.com/rs/cors v1.7.0
+	github.com/rs/cors v1.8.2
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible
 	github.com/status-im/keycard-go v0.2.0
 	github.com/stretchr/testify v1.8.4
 	github.com/supranational/blst v0.3.11
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
+	github.com/tendermint/tendermint v0.35.9
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/urfave/cli/v2 v2.25.7
 	go.uber.org/automaxprocs v1.5.2
@@ -90,6 +93,7 @@ require (
 	github.com/aws/smithy-go v1.15.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.10.0 // indirect
+	github.com/btcsuite/btcd v0.22.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/cockroachdb/errors v1.8.1 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20190617123548-eb05cc24525f // indirect
@@ -97,6 +101,7 @@ require (
 	github.com/cockroachdb/sentry-go v0.6.1-cockroachdb.2 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
+	github.com/cosmos/gogoproto v1.4.3 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/deepmap/oapi-codegen v1.6.0 // indirect
@@ -105,7 +110,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
@@ -121,26 +125,33 @@ require (
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.2-0.20181231171920-c182affec369 // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
-	github.com/mitchellh/mapstructure v1.4.1 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/pointerstructure v1.2.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/naoina/go-stringutil v0.1.0 // indirect
-	github.com/opentracing/opentracing-go v1.1.0 // indirect
+	github.com/oasisprotocol/curve25519-voi v0.0.0-20210609091139-0a56a4bca00b // indirect
+	github.com/opentracing/opentracing-go v1.2.0 // indirect
+	github.com/petermattis/goid v0.0.0-20180202154549-b0b1615b78e5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.12.0 // indirect
+	github.com/prometheus/client_golang v1.12.2 // indirect
 	github.com/prometheus/client_model v0.2.1-0.20210607210712-147c58e9608a // indirect
 	github.com/prometheus/common v0.32.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
+	github.com/rcrowley/go-metrics v0.0.0-20200313005456-10cdbea86bc0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/rs/zerolog v1.27.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/sasha-s/go-deadlock v0.2.1-0.20190427202633-1595213edefa // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673 // indirect
 	golang.org/x/mod v0.14.0 // indirect
 	golang.org/x/net v0.18.0 // indirect
-	google.golang.org/protobuf v1.27.1 // indirect
+	google.golang.org/genproto v0.0.0-20220519153652-3a47de7e79bd // indirect
+	google.golang.org/grpc v1.50.1 // indirect
+	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
