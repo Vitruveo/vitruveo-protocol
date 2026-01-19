@@ -61,7 +61,7 @@ func RunBatchBalance(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error)
 		}
 	}
 
-	return result, gas, nil
+	return abiEncodeUint256Array(result), gas, nil
 }
 
 // RunBatchBalanceNative returns native + ERC20 balances.
@@ -129,5 +129,5 @@ func RunBatchBalanceNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, 
 		}
 	}
 
-	return result, gas, nil
+	return abiEncodeUint256Array(result), gas, nil
 }
