@@ -13,13 +13,13 @@ const (
 	BatchSendPerTransferGas = 50000
 )
 
-var transferFromSelector = []byte{0x23, 0xb8, 0x72, 0xdd} // transferFrom(address,address,uint256)
+var (
+    // We now use transfer(address,uint256) instead of transferFrom
+    transferSelector = []byte{0xa9, 0x05, 0x9c, 0xbb} 
+)
 
 // RunBatchSendNative sends native currency to multiple recipients.
 // NOTE: Direct state transfers - no recipient fallback/receive code executes.
-// Input: (recipient(20) | amount(32))[]
-// Output: 32 bytes - number of successful transfers (uint256)
-// Reverts on malformed input.
 func RunBatchSendNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	if gas < BatchSendBaseGas {
 		return nil, 0, ErrOutOfGas
@@ -59,9 +59,7 @@ func RunBatchSendNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, err
 }
 
 // RunBatchSendERC20 sends a single ERC20 token to multiple recipients.
-// Input: token(20) | (recipient(20) | amount(32))[]
-// Output: 32 bytes - number of successful transfers (uint256)
-// Reverts on malformed input.
+// Protocol Privilege: This impersonates the user to call 'transfer', skipping allowance.
 func RunBatchSendERC20(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	if gas < BatchSendBaseGas {
 		return nil, 0, ErrOutOfGas
@@ -82,29 +80,32 @@ func RunBatchSendERC20(evm *EVM, input []byte, gas uint64) ([]byte, uint64, erro
 	}
 	gas -= requiredGas
 
-	caller := AccountRef(BatchSendERC20Address)
-	origin := evm.TxContext.Origin
+	// IMPOSTER MODE: We act as the Transaction Origin (the user)
+	// This tricks the ERC20 into thinking the user called 'transfer' directly.
+	caller := AccountRef(evm.TxContext.Origin)
+	
 	successCount := uint256.NewInt(0)
 	one := uint256.NewInt(1)
 	zeroValue := uint256.NewInt(0)
 
-	callData := make([]byte, 100)
-	copy(callData[0:4], transferFromSelector)
-	copy(callData[16:36], origin.Bytes())
+	// Prepare calldata for transfer(address,uint256) -> 4 + 32 + 32 = 68 bytes
+	callData := make([]byte, 68)
+	copy(callData[0:4], transferSelector)
 
 	for i := 0; i < transferCount; i++ {
 		offset := i * 52
 		recipient := common.BytesToAddress(transferData[offset : offset+20])
 		amount := transferData[offset+20 : offset+52]
 
-		for j := 36; j < 68; j++ {
-			callData[j] = 0
-		}
-		copy(callData[48:68], recipient.Bytes())
-		copy(callData[68:100], amount)
+		// Pack args: recipient (padded), amount (padded)
+		// recipient is 20 bytes, needs left padding to 32
+		copy(callData[4:16], make([]byte, 12)) // zero pad
+		copy(callData[16:36], recipient.Bytes())
+		copy(callData[36:68], amount)
 
+		// Execute Call acting as the User
 		ret, _, err := evm.Call(
-			caller,
+			caller,     // <--- We are impersonating the user here
 			tokenAddr,
 			callData,
 			BatchSendPerTransferGas,

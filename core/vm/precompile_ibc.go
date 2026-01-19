@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	IBCVerifierAddress = common.HexToAddress("0x00000000000000000000000000000000000001BC")
+
 	IBCStorageAddress = common.HexToAddress("0x1dbe97231e0bd613EDD58b05A70287DEb84a63C4")
 
 	setSlotSelector   = crypto.Keccak256([]byte("setSlot(bytes32,bytes32)"))[:4]
@@ -998,7 +998,7 @@ func (c *IBCVerifier) storageSet(evm *EVM, key, value common.Hash) bool {
 	copy(input[4:36], key[:])
 	copy(input[36:68], value[:])
 
-	_, _, err := evm.Call(AccountRef(IBCVerifierAddress), IBCStorageAddress, input, 50000, uint256.NewInt(0))
+	_, _, err := evm.Call(AccountRef(IBCPrecompileAddress), IBCStorageAddress, input, 50000, uint256.NewInt(0))
 	return err == nil
 }
 
@@ -1007,7 +1007,7 @@ func (c *IBCVerifier) storageGet(evm *EVM, key common.Hash) common.Hash {
 	copy(input[0:4], getSlotSelector)
 	copy(input[4:36], key[:])
 
-	ret, _, err := evm.StaticCall(AccountRef(IBCVerifierAddress), IBCStorageAddress, input, 50000)
+	ret, _, err := evm.StaticCall(AccountRef(IBCPrecompileAddress), IBCStorageAddress, input, 50000)
 	if err != nil || len(ret) < 32 {
 		return common.Hash{}
 	}

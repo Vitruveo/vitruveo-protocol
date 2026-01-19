@@ -112,7 +112,7 @@ func RunBatchBalanceNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, 
 	copy(callData[0:4], balanceOfSelector)
 	copy(callData[16:36], owner.Bytes())
 
-	caller := AccountRef(BatchBalanceNativeAddress)
+	caller := AccountRef(BatchBalanceNativePrecompileAddress)
 
 	for i := 0; i < tokenCount; i++ {
 		tokenAddr := common.BytesToAddress(tokenData[i*20 : (i+1)*20])

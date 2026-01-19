@@ -23,6 +23,9 @@ var (
 
 	// HostRequestsContractAddress is the registry contract for HOST requests
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
+
+	// Selector for getRequest(uint256)
+	getRequestSelector = crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
 )
 
 func init() {
@@ -57,12 +60,17 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	}
 	remainingGas := suppliedGas - gasCost
 
-	// 1. Robust Input Parsing
+	// 1. Robust Input Parsing (Selector Check)
+	// We only strip the first 4 bytes if they match the specific selector we expect.
+	// Otherwise, we assume raw bytes.
 	var requestIdBytes []byte
 	data := input
-	if len(input) >= 36 {
-		data = input[4:] // Strip selector if present
+	
+	// Check if input starts with getRequest selector (0x11162460)
+	if len(input) >= 36 && bytes.Equal(input[:4], getRequestSelector) {
+		data = input[4:]
 	}
+
 	if len(data) > 32 {
 		requestIdBytes = data[:32]
 	} else {
@@ -73,8 +81,8 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	log.Info("HOST EXEC: Lookup", "id", requestId)
 
 	// 2. Call Registry Contract
-	selector := crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
-	calldata := append(selector, common.LeftPadBytes(requestId.Bytes(), 32)...)
+	// Construct calldata: getRequest(requestId)
+	calldata := append(getRequestSelector, common.LeftPadBytes(requestId.Bytes(), 32)...)
 
 	ret, _, err := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, 100000)
 	if err != nil {
@@ -118,8 +126,9 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	// Registry Tuple: (url, payload, headers, nodes, expireTime)
 	expireTime := new(big.Int).SetBytes(readWord(128))
 
-	// 4. Expiration Check
-	if uint64(time.Now().Unix()) > expireTime.Uint64() {
+	// 4. Expiration Check (CONSENSUS FIX: Use Block Time)
+	// Use evm.Context.Time (block timestamp) instead of wall clock.
+	if evm.Context.Time > expireTime.Uint64() {
 		log.Info("HOST EXEC: Request Expired", "id", requestId)
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
