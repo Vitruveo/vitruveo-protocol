@@ -5,72 +5,44 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/ecies"
 	"github.com/ethereum/go-ethereum/log"
 )
 
-// HOST Configuration
 var (
-	hostSignerAddress common.Address
-
-	// HostRequestsContractAddress is the registry contract for HOST requests
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
-
-	// Selector for getRequest(uint256)
-	getRequestSelector = crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
+	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
 )
 
-func init() {
-	// Scrape CLI for Validator Address
-	for i, arg := range os.Args {
-		if arg == "--unlock" || strings.HasPrefix(arg, "--unlock=") {
-			var val string
-			if strings.HasPrefix(arg, "--unlock=") {
-				val = strings.TrimPrefix(arg, "--unlock=")
-			} else if i+1 < len(os.Args) {
-				val = os.Args[i+1]
-			}
-			candidates := strings.Split(val, ",")
-			for _, c := range candidates {
-				cleaned := strings.Trim(strings.TrimSpace(c), `"'`)
-				if common.IsHexAddress(cleaned) {
-					hostSignerAddress = common.HexToAddress(cleaned)
-					log.Info("HOST INIT: Signer Found", "address", hostSignerAddress.Hex())
-					return
-				}
-			}
-		}
-	}
-	log.Warn("HOST INIT: No signer found (did you use --unlock?)")
-}
+const (
+	HostGasCost       = 25000
+	RegistryCallGas   = 100000
+	MinRegistryReturn = 224 // 7 * 32 bytes (url, hT, hV, bT, bV, validator, expire)
+)
 
 // RunHOST executes the HOST precompile logic
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error) {
-	const gasCost = 25000
-	if suppliedGas < gasCost {
+	if suppliedGas < HostGasCost {
 		return nil, 0, ErrOutOfGas
 	}
-	remainingGas := suppliedGas - gasCost
+	remainingGas := suppliedGas - HostGasCost
 
-	// 1. Robust Input Parsing (Selector Check)
-	// We only strip the first 4 bytes if they match the specific selector we expect.
-	// Otherwise, we assume raw bytes.
+	// 1. Parse Request ID
 	var requestIdBytes []byte
 	data := input
-	
-	// Check if input starts with getRequest selector (0x11162460)
-	if len(input) >= 36 && bytes.Equal(input[:4], getRequestSelector) {
+	if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
 		data = input[4:]
 	}
-
 	if len(data) > 32 {
 		requestIdBytes = data[:32]
 	} else {
@@ -78,102 +50,177 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	}
 	requestId := new(big.Int).SetBytes(requestIdBytes)
 
-	log.Info("HOST EXEC: Lookup", "id", requestId)
-
 	// 2. Call Registry Contract
-	// Construct calldata: getRequest(requestId)
 	calldata := append(getRequestSelector, common.LeftPadBytes(requestId.Bytes(), 32)...)
+	ret, _, err := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
 
-	ret, _, err := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, 100000)
-	if err != nil {
-		log.Warn("HOST EXEC: Registry Call Failed", "id", requestId, "err", err)
+	if err != nil || len(ret) < MinRegistryReturn {
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
 
-	if len(ret) == 0 {
-		log.Warn("HOST EXEC: Registry Empty Return", "id", requestId)
-		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
-	}
-
-	// 3. Manual ABI Decoding
-	readWord := func(offset int) []byte {
-		if offset+32 > len(ret) {
+	// 3. ABI Helper Closures
+	readWord := func(pos int) []byte {
+		if pos+32 > len(ret) {
 			return nil
 		}
-		return ret[offset : offset+32]
+		return ret[pos : pos+32]
 	}
-	readDynamic := func(offsetPtr []byte) ([]byte, error) {
+	readDynamicString := func(offsetPtr []byte) string {
 		if offsetPtr == nil {
-			return nil, nil
+			return ""
 		}
 		offset := int(new(big.Int).SetBytes(offsetPtr).Uint64())
-		if offset >= len(ret) {
-			return nil, nil
+		if offset+32 > len(ret) {
+			return ""
 		}
-		lenBytes := readWord(offset)
-		if lenBytes == nil {
-			return nil, nil
+		length := int(new(big.Int).SetBytes(ret[offset : offset+32]).Uint64())
+		if offset+32+length > len(ret) {
+			return ""
 		}
-		length := int(new(big.Int).SetBytes(lenBytes).Uint64())
-		start := offset + 32
-		end := start + length
-		if end > len(ret) {
-			return nil, nil
+		return string(ret[offset+32 : offset+32+length])
+	}
+	readStringArray := func(offsetPtr []byte) []string {
+		if offsetPtr == nil {
+			return nil
 		}
-		return ret[start:end], nil
+		arrayOffset := int(new(big.Int).SetBytes(offsetPtr).Uint64())
+		if arrayOffset+32 > len(ret) {
+			return nil
+		}
+		count := int(new(big.Int).SetBytes(ret[arrayOffset : arrayOffset+32]).Uint64())
+		result := make([]string, 0, count)
+		dataStart := arrayOffset + 32
+		for i := 0; i < count; i++ {
+			pos := dataStart + (i * 32)
+			if pos+32 > len(ret) {
+				break
+			}
+			strRelOffset := int(new(big.Int).SetBytes(ret[pos : pos+32]).Uint64())
+			strAbsOffset := arrayOffset + strRelOffset
+			if strAbsOffset+32 > len(ret) {
+				continue
+			}
+			strLen := int(new(big.Int).SetBytes(ret[strAbsOffset : strAbsOffset+32]).Uint64())
+			start := strAbsOffset + 32
+			end := start + strLen
+			if end <= len(ret) {
+				result = append(result, string(ret[start:end]))
+			}
+		}
+		return result
 	}
 
-	// Registry Tuple: (url, payload, headers, nodes, expireTime)
-	expireTime := new(big.Int).SetBytes(readWord(128))
+	// 4. Extract Data
+	// Offsets based on getRequest signature:
+	// (string url, string hT, string[] hV, string bT, string[] bV, address validator, uint256 expire)
+	// 0: url offset
+	// 32: hT offset
+	// 64: hV offset
+	// 96: bT offset
+	// 128: bV offset
+	// 160: validator address (direct)
+	// 192: expireTime (direct)
 
-	// 4. Expiration Check (CONSENSUS FIX: Use Block Time)
-	// Use evm.Context.Time (block timestamp) instead of wall clock.
+	url := readDynamicString(readWord(0))
+	headerTemplate := readDynamicString(readWord(32))
+	headerValues := readStringArray(readWord(64))
+	bodyTemplate := readDynamicString(readWord(96))
+	bodyValues := readStringArray(readWord(128))
+
+	// Validator is at offset 160. It is an address, padded to 32 bytes in ABI.
+	validatorWord := readWord(160)
+	expireTime := new(big.Int).SetBytes(readWord(192))
+
+	// 5. Check Expiration
 	if evm.Context.Time > expireTime.Uint64() {
-		log.Info("HOST EXEC: Request Expired", "id", requestId)
 		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 	}
 
-	// 5. Node Selection Check
+	// 6. Node Selection Logic (Single Validator)
 	shouldFire := false
-	if hostSignerAddress != (common.Address{}) {
-		nodesOffsetPtr := readWord(96)
-		nodesOffset := int(new(big.Int).SetBytes(nodesOffsetPtr).Uint64())
+	if crypto.GlobalValidatorKey != nil && validatorWord != nil {
+		myAddress := crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+		
+		// ABI encodes addresses as right-aligned 20 bytes in a 32-byte word
+		targetValidator := common.BytesToAddress(validatorWord[12:32])
 
-		if nodesOffset+32 <= len(ret) {
-			count := int(new(big.Int).SetBytes(ret[nodesOffset : nodesOffset+32]).Uint64())
-			startPos := nodesOffset + 32
-			for i := 0; i < count; i++ {
-				p := startPos + (i * 32)
-				if p+32 <= len(ret) {
-					if common.BytesToAddress(ret[p+12:p+32]) == hostSignerAddress {
-						shouldFire = true
-						break
-					}
-				}
-			}
+		if targetValidator == myAddress {
+			shouldFire = true
 		}
 	}
 
-	// 6. Fire Side Effect
+	// 7. Execution with Decryption
 	if shouldFire {
-		urlBytes, _ := readDynamic(readWord(0))
-		payload, _ := readDynamic(readWord(32))
-		headersBytes, _ := readDynamic(readWord(64))
+		// A. Process Header Values (Decrypt + Substitute)
+		finalHeadersStr := fillTemplate(headerTemplate, headerValues)
 
-		if urlBytes != nil {
-			go fireWebhook(string(urlBytes), common.CopyBytes(payload), string(headersBytes), requestId)
+		headerMap := make(map[string]string)
+		if len(finalHeadersStr) > 0 {
+			if err := json.Unmarshal([]byte(finalHeadersStr), &headerMap); err != nil {
+				log.Warn("HOST: Header Unmarshal failed", "err", err, "json", finalHeadersStr)
+			}
 		}
-	} else {
-		log.Info("HOST EXEC: Node not selected", "id", requestId)
+
+		// B. Process Body Values (Decrypt + Substitute)
+		finalBody := fillTemplate(bodyTemplate, bodyValues)
+
+		go fireWebhook(url, []byte(finalBody), headerMap, requestId)
 	}
 
 	return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 }
 
-func fireWebhook(url string, payload []byte, headersStr string, requestId *big.Int) {
+// fillTemplate checks for "|" prefix, decrypts, and replaces $N placeholders
+func fillTemplate(template string, values []string) string {
+	const magicPrefix = "|"
+
+	replacements := make([]string, 0, len(values)*2)
+
+	for i, rawVal := range values {
+		processedVal := rawVal
+		trimmed := strings.TrimSpace(rawVal)
+
+		if strings.HasPrefix(trimmed, magicPrefix) {
+			// 1. Strip Sentinel
+			potentialHex := strings.TrimPrefix(trimmed, magicPrefix)
+			processedVal = potentialHex
+
+			// 2. Logic: Bare pipe check & Hex normalization
+			if len(potentialHex) > 0 {
+				if !strings.HasPrefix(potentialHex, "0x") {
+					potentialHex = "0x" + potentialHex
+				}
+
+				// 3. Attempt Decrypt
+				if bytes, err := hexutil.Decode(potentialHex); err == nil {
+					if crypto.GlobalValidatorKey != nil {
+						eciesKey := ecies.ImportECDSA(crypto.GlobalValidatorKey)
+						if decrypted, err := eciesKey.Decrypt(bytes, nil, nil); err == nil {
+							// Success: Use decrypted
+							processedVal = string(decrypted)
+						} else {
+							log.Trace("HOST: Decrypt failed", "err", err)
+						}
+					}
+				}
+			}
+		}
+
+		// Add to replacer args
+		placeholder := fmt.Sprintf("$%d", i+1)
+		replacements = append(replacements, placeholder, processedVal)
+	}
+
+	if len(replacements) == 0 {
+		return template
+	}
+	return strings.NewReplacer(replacements...).Replace(template)
+}
+
+func fireWebhook(url string, payload []byte, headers map[string]string, requestId *big.Int) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("HOST WEBHOOK: PANIC", "err", r)
+			log.Error("HOST WEBHOOK: Panic", "err", r)
 		}
 	}()
 
@@ -182,36 +229,24 @@ func fireWebhook(url string, payload []byte, headersStr string, requestId *big.I
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		log.Error("HOST WEBHOOK: Creation Failed", "err", err)
 		return
 	}
 
 	req.Header.Set("X-Chain-Request-ID", requestId.String())
-	if !strings.Contains(strings.ToLower(headersStr), "content-type") {
+	if _, ok := headers["Content-Type"]; !ok {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	if len(headersStr) > 0 {
-		var headerMap map[string]string
-		if err := json.Unmarshal([]byte(headersStr), &headerMap); err == nil {
-			for k, v := range headerMap {
-				req.Header.Set(k, v)
-			}
-		}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: false}},
 	}
-
 	resp, err := client.Do(req)
-	if err != nil {
-		log.Error("HOST WEBHOOK: Network Error", "err", err)
-		return
+	if err == nil {
+		defer resp.Body.Close()
+		log.Info("HOST WEBHOOK: FIRED", "id", requestId, "status", resp.StatusCode)
 	}
-	defer resp.Body.Close()
-
-	log.Info("HOST WEBHOOK: SUCCESS", "status", resp.StatusCode, "id", requestId)
 }

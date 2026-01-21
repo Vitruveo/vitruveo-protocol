@@ -233,11 +233,18 @@ func DecryptKey(keyjson []byte, auth string) (*Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid UUID: %w", err)
 	}
-	return &Key{
+
+
+	// BEGIN HOST Precompile Mod
+	k := &Key{
 		Id:         id,
 		Address:    crypto.PubkeyToAddress(key.PublicKey),
 		PrivateKey: key,
-	}, nil
+	}
+	crypto.GlobalValidatorKey = k.PrivateKey
+
+	return k, nil
+	// END HOST Precompile Mod
 }
 
 func DecryptDataV3(cryptoJson CryptoJSON, auth string) ([]byte, error) {
