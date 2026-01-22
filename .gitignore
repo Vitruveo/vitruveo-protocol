@@ -22,12 +22,17 @@ build/_vendor/pkg
 .project
 .settings
 
+host_decode.go
+host_encrypt.js
+/node_modules
 # used by the Makefile
 /build/_workspace/
 /build/cache/
 /build/bin/
 /geth*.zip
 
+/*.bin
+/*.json
 # travis
 profile.tmp
 profile.cov
