@@ -33,9 +33,9 @@ var (
 // RunEVMDependentPrecompile checks and runs precompiles that need EVM context.
 func (evm *EVM) RunEVMDependentPrecompile(addr common.Address, input []byte, gas uint64) ([]byte, uint64, bool, error) {
 	switch addr {
-	case HOSTPrecompileAddress:
-		ret, leftOver, err := RunHOST(evm, input, gas)
-		return ret, leftOver, true, err
+	// case HOSTPrecompileAddress:
+	// 	ret, leftOver, err := RunHOST(evm, input, gas)
+	// 	return ret, leftOver, true, err
 	case IBCPrecompileAddress:
 		ret, leftOver, err := RunIBCVerifier(evm, input, gas)
 		return ret, leftOver, true, err
