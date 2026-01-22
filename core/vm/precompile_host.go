@@ -87,7 +87,7 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 			pos := dataStart + (i * 32)
 			if pos+32 > len(ret) { break }
 			strRelOffset := int(new(big.Int).SetBytes(ret[pos : pos+32]).Uint64())
-			strAbsOffset := arrayOffset + 32 + strRelOffset
+			strAbsOffset := arrayOffset + strRelOffset
 			if strAbsOffset+32 > len(ret) { continue }
 			strLen := int(new(big.Int).SetBytes(ret[strAbsOffset : strAbsOffset+32]).Uint64())
 			start := strAbsOffset + 32

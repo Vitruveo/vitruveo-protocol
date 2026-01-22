@@ -26,7 +26,6 @@ var (
 	RNGPrecompileAddress  		  	  			  = common.HexToAddress("0x00000000000000000000000000000000000000FF")
 	IBCPrecompileAddress  		  	  			  = common.HexToAddress("0x00000000000000000000000000000000000001BC")
 	TrendPrecompileAddress  		  	  		  = common.HexToAddress("0x00000000000000000000000000000000000000DC")
-	EncryptPrecompileAddress					  = common.HexToAddress("0x00000000000000000000000000000000000000EC")
 )
 
 // RunEVMDependentPrecompile checks and runs precompiles that need EVM context.
@@ -69,9 +68,6 @@ func (evm *EVM) RunEVMDependentPrecompile(addr common.Address, input []byte, gas
 		return ret, leftOver, true, err
 	case TrendPrecompileAddress:
 		ret, leftOver, err := RunTrend(evm, input, gas)
-		return ret, leftOver, true, err
-	case EncryptPrecompileAddress:
-		ret, leftOver, err := RunEncrypt(evm, input, gas)
 		return ret, leftOver, true, err
 	default:
 		return nil, gas, false, nil
