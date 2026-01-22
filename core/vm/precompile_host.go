@@ -87,19 +87,35 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 		if arrayOffset+32 > len(ret) {
 			return nil
 		}
-		count := int(new(big.Int).SetBytes(ret[arrayOffset : arrayOffset+32]).Uint64())
-		result := make([]string, 0, count)
+		
+		// dataStart is arrayOffset + 32 (skipping the Count word)
 		dataStart := arrayOffset + 32
+		
+		count := int(new(big.Int).SetBytes(ret[arrayOffset : arrayOffset+32]).Uint64())
+
+		//Safety Check: Prevent OOM attacks from malicious contracts
+		if count > 1000 {
+			return nil
+		}
+
+		result := make([]string, 0, count)
+		
 		for i := 0; i < count; i++ {
+			// Calculate position of the OFFSET for the i-th string
 			pos := dataStart + (i * 32)
 			if pos+32 > len(ret) {
 				break
 			}
+			
+			// Read the relative offset value
 			strRelOffset := int(new(big.Int).SetBytes(ret[pos : pos+32]).Uint64())
-			strAbsOffset := arrayOffset + strRelOffset
+			
+			strAbsOffset := arrayOffset + 32 + strRelOffset
+
 			if strAbsOffset+32 > len(ret) {
 				continue
 			}
+			
 			strLen := int(new(big.Int).SetBytes(ret[strAbsOffset : strAbsOffset+32]).Uint64())
 			start := strAbsOffset + 32
 			end := start + strLen
@@ -111,23 +127,12 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	}
 
 	// 4. Extract Data
-	// Offsets based on getRequest signature:
-	// (string url, string hT, string[] hV, string bT, string[] bV, address validator, uint256 expire)
-	// 0: url offset
-	// 32: hT offset
-	// 64: hV offset
-	// 96: bT offset
-	// 128: bV offset
-	// 160: validator address (direct)
-	// 192: expireTime (direct)
-
 	url := readDynamicString(readWord(0))
 	headerTemplate := readDynamicString(readWord(32))
 	headerValues := readStringArray(readWord(64))
 	bodyTemplate := readDynamicString(readWord(96))
 	bodyValues := readStringArray(readWord(128))
 
-	// Validator is at offset 160. It is an address, padded to 32 bytes in ABI.
 	validatorWord := readWord(160)
 	expireTime := new(big.Int).SetBytes(readWord(192))
 
@@ -140,10 +145,7 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 	shouldFire := false
 	if crypto.GlobalValidatorKey != nil && validatorWord != nil {
 		myAddress := crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
-		
-		// ABI encodes addresses as right-aligned 20 bytes in a 32-byte word
 		targetValidator := common.BytesToAddress(validatorWord[12:32])
-
 		if targetValidator == myAddress {
 			shouldFire = true
 		}
@@ -151,7 +153,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 
 	// 7. Execution with Decryption
 	if shouldFire {
-		// A. Process Header Values (Decrypt + Substitute)
 		finalHeadersStr := fillTemplate(headerTemplate, headerValues)
 
 		headerMap := make(map[string]string)
@@ -161,16 +162,13 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) ([]byte, uint64, error)
 			}
 		}
 
-		// B. Process Body Values (Decrypt + Substitute)
 		finalBody := fillTemplate(bodyTemplate, bodyValues)
-
 		go fireWebhook(url, []byte(finalBody), headerMap, requestId)
 	}
 
 	return math.PaddedBigBytes(requestId, 32), remainingGas, nil
 }
 
-// fillTemplate checks for "|" prefix, decrypts, and replaces $N placeholders
 func fillTemplate(template string, values []string) string {
 	const magicPrefix = "|"
 
@@ -181,23 +179,21 @@ func fillTemplate(template string, values []string) string {
 		trimmed := strings.TrimSpace(rawVal)
 
 		if strings.HasPrefix(trimmed, magicPrefix) {
-			// 1. Strip Sentinel
 			potentialHex := strings.TrimPrefix(trimmed, magicPrefix)
 			processedVal = potentialHex
 
-			// 2. Logic: Bare pipe check & Hex normalization
 			if len(potentialHex) > 0 {
 				if !strings.HasPrefix(potentialHex, "0x") {
 					potentialHex = "0x" + potentialHex
 				}
 
-				// 3. Attempt Decrypt
-				if bytes, err := hexutil.Decode(potentialHex); err == nil {
+				if b, err := hexutil.Decode(potentialHex); err == nil {
 					if crypto.GlobalValidatorKey != nil {
 						eciesKey := ecies.ImportECDSA(crypto.GlobalValidatorKey)
-						if decrypted, err := eciesKey.Decrypt(bytes, nil, nil); err == nil {
-							// Success: Use decrypted
-							processedVal = string(decrypted)
+						if decrypted, err := eciesKey.Decrypt(b, nil, nil); err == nil {
+							// [Added] Safety: Trim null bytes in case of padding
+							cleanBytes := bytes.Trim(decrypted, "\x00")
+							processedVal = string(cleanBytes)
 						} else {
 							log.Trace("HOST: Decrypt failed", "err", err)
 						}
@@ -205,8 +201,6 @@ func fillTemplate(template string, values []string) string {
 				}
 			}
 		}
-
-		// Add to replacer args
 		placeholder := fmt.Sprintf("$%d", i+1)
 		replacements = append(replacements, placeholder, processedVal)
 	}
