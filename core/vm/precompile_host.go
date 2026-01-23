@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/elliptic"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,21 +23,25 @@ import (
 
 var (
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
-	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256)"))[:4]
+	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256,address)"))[:4]
 )
 
 const (
 	HostGasCost       = 25000
 	RegistryCallGas   = 100000
-	MinRegistryReturn = 256    // Minimum bytes: shouldProcess (32) + 6 offsets/values (192) + some data
+	MinRegistryReturn = 256
 	MaxStringLength   = 1000000
 	MaxArrayCount     = 1000
 )
 
 // RunHOST executes the HOST precompile logic
-// SAFETY: This function must never panic - all errors return gracefully
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
-	// Top-level panic recovery
+	// 1. Gas Check
+	if suppliedGas < HostGasCost {
+		return nil, 0, ErrOutOfGas
+	}
+	gasLeft = suppliedGas - HostGasCost
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("HOST: Panic recovered in RunHOST", "err", r)
@@ -46,12 +51,7 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		}
 	}()
 
-	if suppliedGas < HostGasCost {
-		return nil, 0, ErrOutOfGas
-	}
-	remainingGas := suppliedGas - HostGasCost
-
-	// 1. Parse Request ID (safe - LeftPadBytes handles nil/empty)
+	// 2. Parse Request ID
 	var requestIdBytes []byte
 	data := input
 	if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
@@ -64,20 +64,41 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 	}
 	requestId := new(big.Int).SetBytes(requestIdBytes)
 
-	// Helper: return default response
-	defaultReturn := func() ([]byte, uint64, error) {
-		return math.PaddedBigBytes(requestId, 32), remainingGas, nil
+	// Helper to return the RequestID (standard fallback response)
+	returnRequestID := func(currentGas uint64) ([]byte, uint64, error) {
+		return math.PaddedBigBytes(requestId, 32), currentGas, nil
 	}
 
-	// 2. Call Registry Contract
+	// 3. Prepare Registry Call
+	if gasLeft < RegistryCallGas {
+		return nil, 0, ErrOutOfGas
+	}
+
+	// Get Validator Address from Global Key
+	if crypto.GlobalValidatorKey == nil {
+		log.Trace("HOST: No GlobalValidatorKey found, skipping registry call")
+		return returnRequestID(gasLeft)
+	}
+	myAddress := crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+
+	// Construct Calldata: Selector + RequestID (32b) + ValidatorAddress (32b)
 	calldata := append(getRequestSelector, common.LeftPadBytes(requestId.Bytes(), 32)...)
-	regRet, _, regErr := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
+	calldata = append(calldata, common.LeftPadBytes(myAddress.Bytes(), 32)...)
+
+	// 4. Call Registry Contract
+	regRet, leftOverGas, regErr := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
+
+	gasConsumed := RegistryCallGas - leftOverGas
+	if gasConsumed > gasLeft {
+		return nil, 0, ErrOutOfGas
+	}
+	gasLeft -= gasConsumed
 
 	if regErr != nil || len(regRet) < MinRegistryReturn {
-		return defaultReturn()
+		return returnRequestID(gasLeft)
 	}
 
-	// 3. Safe ABI Helper Closures
+	// 5. Safe ABI Helper Closures
 	safeReadWord := func(pos int) []byte {
 		if pos < 0 || pos+32 > len(regRet) {
 			return nil
@@ -85,18 +106,17 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return regRet[pos : pos+32]
 	}
 
-	// 4. Check shouldProcess flag (first return value from registry)
-	// If false, skip all processing - request doesn't exist, expired, or wrong validator
+	// 6. Check shouldProcess flag (Offset 0)
 	shouldProcessWord := safeReadWord(0)
 	if shouldProcessWord == nil {
-		return defaultReturn()
+		return returnRequestID(gasLeft)
 	}
 	shouldProcess := new(big.Int).SetBytes(shouldProcessWord)
 	if shouldProcess.Cmp(big.NewInt(0)) == 0 {
-		return defaultReturn()
+		return returnRequestID(gasLeft)
 	}
 
-	// 5. Safe ABI Helpers (continued)
+	// 7. Safe ABI Helpers (continued)
 	safeToInt := func(b []byte) int {
 		if b == nil {
 			return -1
@@ -142,8 +162,9 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 			if strRelOffset < 0 {
 				continue
 			}
-			// FIXED: Offset is relative to dataStart (arrayOffset + 32)
-			strAbsOffset := arrayOffset + 32 + strRelOffset
+
+			strAbsOffset := dataStart + strRelOffset
+
 			if strAbsOffset < 0 || strAbsOffset+32 > len(regRet) {
 				continue
 			}
@@ -160,14 +181,14 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return result
 	}
 
-	// 6. Extract Data (offsets shifted by 32 due to shouldProcess bool)
+	// 8. Extract Data
 	url := safeReadDynamicString(safeReadWord(32))
 	headerTemplate := safeReadDynamicString(safeReadWord(64))
 	headerValues := safeReadStringArray(safeReadWord(96))
 	bodyTemplate := safeReadDynamicString(safeReadWord(128))
 	bodyValues := safeReadStringArray(safeReadWord(160))
 
-	// 7. Process and Fire Webhook
+	// 9. Process (Decryption)
 	finalHeadersStr := safeFillTemplate(headerTemplate, headerValues)
 
 	headerMap := make(map[string]string)
@@ -179,9 +200,31 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 
 	finalBody := safeFillTemplate(bodyTemplate, bodyValues)
 
-	go fireWebhook(url, []byte(finalBody), headerMap, requestId)
+	// 10. Sign the Payload (Chain of Custody)
+	// We calculate the signature here to ensure the global key is accessed safely
+	var signatureHex string
+	var pubkeyHex string
 
-	return defaultReturn()
+	if crypto.GlobalValidatorKey != nil {
+		// Hash the body
+		hash := crypto.Keccak256([]byte(finalBody))
+		
+		// Sign: [R || S || V] (65 bytes)
+		sig, err := crypto.Sign(hash, crypto.GlobalValidatorKey)
+		if err == nil {
+			signatureHex = "0x" + hex.EncodeToString(sig)
+			// Also grab pubkey for convenience
+			pubkeyBytes := crypto.FromECDSAPub(&crypto.GlobalValidatorKey.PublicKey)
+			pubkeyHex = "0x" + hex.EncodeToString(pubkeyBytes)
+		} else {
+			log.Error("HOST: Failed to sign payload", "err", err)
+		}
+	}
+
+	// 11. Fire Webhook (Async)
+	go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
+
+	return returnRequestID(gasLeft)
 }
 
 // safeFillTemplate processes template with decryption - never panics
@@ -205,10 +248,9 @@ func safeFillTemplate(template string, values []string) string {
 
 		if strings.HasPrefix(trimmed, magicPrefix) {
 			potentialHex := strings.TrimPrefix(trimmed, magicPrefix)
-			processedVal = potentialHex // Fallback: stripped value
+			processedVal = potentialHex
 
 			if len(potentialHex) > 0 {
-				// Remove 0x prefix if present
 				hexStr := potentialHex
 				if strings.HasPrefix(hexStr, "0x") || strings.HasPrefix(hexStr, "0X") {
 					hexStr = hexStr[2:]
@@ -237,57 +279,42 @@ func safeFillTemplate(template string, values []string) string {
 }
 
 // decryptECDH decrypts using ECDH shared secret + AES-GCM
-// Format: ephemeralPubKey (65) + nonce (12) + ciphertext + tag (16)
 func decryptECDH(ciphertext []byte) ([]byte, error) {
-	// Minimum: 65 + 12 + 16 = 93 bytes
 	if len(ciphertext) < 93 {
-		return nil, fmt.Errorf("ciphertext too short: %d", len(ciphertext))
+		return nil, fmt.Errorf("ciphertext too short")
 	}
-
 	if crypto.GlobalValidatorKey == nil {
 		return nil, fmt.Errorf("no validator key")
 	}
 
-	// Parse components
 	ephemeralPub := ciphertext[:65]
 	nonce := ciphertext[65:77]
 	encrypted := ciphertext[77:]
 
-	// Unmarshal ephemeral public key
 	x, y := elliptic.Unmarshal(crypto.S256(), ephemeralPub)
 	if x == nil {
 		return nil, fmt.Errorf("invalid ephemeral pubkey")
 	}
 
-	// ECDH - raw x-coordinate as shared secret
 	sx, _ := crypto.S256().ScalarMult(x, y, crypto.GlobalValidatorKey.D.Bytes())
-
-	// Pad x-coordinate to 32 bytes
 	shared := make([]byte, 32)
 	sxBytes := sx.Bytes()
 	copy(shared[32-len(sxBytes):], sxBytes)
 
-	// AES-GCM decrypt
 	block, err := aes.NewCipher(shared)
 	if err != nil {
-		return nil, fmt.Errorf("aes cipher: %w", err)
+		return nil, err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("gcm: %w", err)
+		return nil, err
 	}
 
-	plaintext, err := gcm.Open(nil, nonce, encrypted, nil)
-	if err != nil {
-		return nil, fmt.Errorf("gcm open: %w", err)
-	}
-
-	return plaintext, nil
+	return gcm.Open(nil, nonce, encrypted, nil)
 }
 
-// fireWebhook sends HTTP POST - runs in goroutine, never panics
-func fireWebhook(url string, payload []byte, headers map[string]string, requestId *big.Int) {
+func fireWebhook(url string, payload []byte, headers map[string]string, requestId *big.Int, signature string, pubkey string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("HOST WEBHOOK: Panic", "err", r)
@@ -308,23 +335,29 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 		return
 	}
 
-	// Set default headers
+	// Standard Headers
 	req.Header.Set("User-Agent", "Vitruveo-HOST/1.0")
 	req.Header.Set("X-HOST-Request-ID", requestId.String())
-	
+
+	// Chain of Custody Headers
+	if signature != "" {
+		req.Header.Set("X-HOST-Signature", signature)
+		req.Header.Set("X-HOST-Pubkey", pubkey)
+	}
+
 	if _, ok := headers["Content-Type"]; !ok {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// Apply custom headers (can override defaults except User-Agent)
 	for k, v := range headers {
-		if k != "User-Agent" { // Protect User-Agent
+		if k != "User-Agent" {
 			req.Header.Set(k, v)
 		}
 	}
 
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: false}},
+		Timeout:   5 * time.Second,
 	}
 
 	resp, err := client.Do(req)
