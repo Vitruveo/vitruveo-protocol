@@ -28,19 +28,21 @@ var (
 
 const (
 	HostGasCost       = 25000
-	RegistryCallGas   = 100000
+	RegistryCallGas   = 100000 // We will charge this FLAT rate
 	MinRegistryReturn = 256
 	MaxStringLength   = 1000000
 	MaxArrayCount     = 1000
 )
 
-// RunHOST executes the HOST precompile logic
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
-	// 1. Gas Check
-	if suppliedGas < HostGasCost {
+	// 1. Gas Check & Flat Fee Deduction
+	// To prevent forks, we charge the MAXIMUM possible cost upfront.
+	// Every node pays (25k + 100k) = 125k gas, regardless of execution path.
+	totalCost := uint64(HostGasCost + RegistryCallGas)
+	if suppliedGas < totalCost {
 		return nil, 0, ErrOutOfGas
 	}
-	gasLeft = suppliedGas - HostGasCost
+	gasLeft = suppliedGas - totalCost
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -64,41 +66,38 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 	}
 	requestId := new(big.Int).SetBytes(requestIdBytes)
 
-	// Helper to return the RequestID (standard fallback response)
-	returnRequestID := func(currentGas uint64) ([]byte, uint64, error) {
-		return math.PaddedBigBytes(requestId, 32), currentGas, nil
+	// Helper to return the RequestID (This ensures EVM return value is consistent for everyone)
+	returnRequestID := func() ([]byte, uint64, error) {
+		return math.PaddedBigBytes(requestId, 32), gasLeft, nil
 	}
 
-	// 3. Prepare Registry Call
-	if gasLeft < RegistryCallGas {
-		return nil, 0, ErrOutOfGas
+	// 3. Determine "My Address" (Consensus Safe)
+	// Standard nodes (non-validators) don't have a GlobalValidatorKey.
+	// They must use a zero address so they can still run the StaticCall (and pay the gas)
+	// without crashing or taking a cheaper code path.
+	var myAddress common.Address
+	if crypto.GlobalValidatorKey != nil {
+		myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+	} else {
+		myAddress = common.Address{} // Zero address for observers/syncing nodes
 	}
 
-	// Get Validator Address from Global Key
-	if crypto.GlobalValidatorKey == nil {
-		log.Trace("HOST: No GlobalValidatorKey found, skipping registry call")
-		return returnRequestID(gasLeft)
-	}
-	myAddress := crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
-
-	// Construct Calldata: Selector + RequestID (32b) + ValidatorAddress (32b)
+	// 4. Construct Calldata
 	calldata := append(getRequestSelector, common.LeftPadBytes(requestId.Bytes(), 32)...)
 	calldata = append(calldata, common.LeftPadBytes(myAddress.Bytes(), 32)...)
 
-	// 4. Call Registry Contract
-	regRet, leftOverGas, regErr := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
+	// 5. Call Registry Contract
+	// We pass 'RegistryCallGas' effectively as a cap.
+	// Note: We do NOT add the refund back to gasLeft. The gas is "burned" to ensure consistency.
+	regRet, _, regErr := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
 
-	gasConsumed := RegistryCallGas - leftOverGas
-	if gasConsumed > gasLeft {
-		return nil, 0, ErrOutOfGas
-	}
-	gasLeft -= gasConsumed
-
+	// If call failed or returned too little data, we are done.
+	// (Gas is already paid, so no fork).
 	if regErr != nil || len(regRet) < MinRegistryReturn {
-		return returnRequestID(gasLeft)
+		return returnRequestID()
 	}
 
-	// 5. Safe ABI Helper Closures
+	// 6. Safe ABI Helper Closures
 	safeReadWord := func(pos int) []byte {
 		if pos < 0 || pos+32 > len(regRet) {
 			return nil
@@ -106,72 +105,57 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return regRet[pos : pos+32]
 	}
 
-	// 6. Check shouldProcess flag (Offset 0)
+	// 7. Check shouldProcess flag
 	shouldProcessWord := safeReadWord(0)
 	if shouldProcessWord == nil {
-		return returnRequestID(gasLeft)
+		return returnRequestID()
 	}
 	shouldProcess := new(big.Int).SetBytes(shouldProcessWord)
+	
+	// If I am NOT the validator (or I am a public node), this will be false.
+	// We return early here. Since gas was flat-fee, this early exit is safe.
 	if shouldProcess.Cmp(big.NewInt(0)) == 0 {
-		return returnRequestID(gasLeft)
+		return returnRequestID()
 	}
 
-	// 7. Safe ABI Helpers (continued)
+	// --- LOGIC BELOW THIS LINE ONLY RUNS IF WE ARE THE TARGET VALIDATOR ---
+	// This is safe because:
+	// 1. Gas was already deducted upfront.
+	// 2. The return value to EVM (RequestID) is the same as the early exit.
+	// 3. The only difference is side-effects (webhook), which are off-chain.
+
 	safeToInt := func(b []byte) int {
-		if b == nil {
-			return -1
-		}
+		if b == nil { return -1 }
 		val := new(big.Int).SetBytes(b).Uint64()
-		if val > uint64(len(regRet)) {
-			return -1
-		}
+		if val > uint64(len(regRet)) { return -1 }
 		return int(val)
 	}
 
 	safeReadDynamicString := func(offsetPtr []byte) string {
 		offset := safeToInt(offsetPtr)
-		if offset < 0 || offset+32 > len(regRet) {
-			return ""
-		}
+		if offset < 0 || offset+32 > len(regRet) { return "" }
 		length := safeToInt(regRet[offset : offset+32])
-		if length < 0 || length > MaxStringLength || offset+32+length > len(regRet) {
-			return ""
-		}
+		if length < 0 || length > MaxStringLength || offset+32+length > len(regRet) { return "" }
 		return string(regRet[offset+32 : offset+32+length])
 	}
 
 	safeReadStringArray := func(offsetPtr []byte) []string {
 		arrayOffset := safeToInt(offsetPtr)
-		if arrayOffset < 0 || arrayOffset+32 > len(regRet) {
-			return nil
-		}
+		if arrayOffset < 0 || arrayOffset+32 > len(regRet) { return nil }
 		count := safeToInt(regRet[arrayOffset : arrayOffset+32])
-		if count < 0 || count > MaxArrayCount {
-			return nil
-		}
+		if count < 0 || count > MaxArrayCount { return nil }
 
 		result := make([]string, 0, count)
 		dataStart := arrayOffset + 32
-
 		for i := 0; i < count; i++ {
 			pos := dataStart + (i * 32)
-			if pos < 0 || pos+32 > len(regRet) {
-				break
-			}
+			if pos < 0 || pos+32 > len(regRet) { break }
 			strRelOffset := safeToInt(regRet[pos : pos+32])
-			if strRelOffset < 0 {
-				continue
-			}
-
+			if strRelOffset < 0 { continue }
 			strAbsOffset := dataStart + strRelOffset
-
-			if strAbsOffset < 0 || strAbsOffset+32 > len(regRet) {
-				continue
-			}
+			if strAbsOffset < 0 || strAbsOffset+32 > len(regRet) { continue }
 			strLen := safeToInt(regRet[strAbsOffset : strAbsOffset+32])
-			if strLen < 0 || strLen > MaxStringLength {
-				continue
-			}
+			if strLen < 0 || strLen > MaxStringLength { continue }
 			start := strAbsOffset + 32
 			end := start + strLen
 			if start >= 0 && end <= len(regRet) {
@@ -181,53 +165,39 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return result
 	}
 
-	// 8. Extract Data
 	url := safeReadDynamicString(safeReadWord(32))
 	headerTemplate := safeReadDynamicString(safeReadWord(64))
 	headerValues := safeReadStringArray(safeReadWord(96))
 	bodyTemplate := safeReadDynamicString(safeReadWord(128))
 	bodyValues := safeReadStringArray(safeReadWord(160))
 
-	// 9. Process (Decryption)
 	finalHeadersStr := safeFillTemplate(headerTemplate, headerValues)
-
 	headerMap := make(map[string]string)
 	if len(finalHeadersStr) > 0 {
-		if err := json.Unmarshal([]byte(finalHeadersStr), &headerMap); err != nil {
-			log.Warn("HOST: Header Unmarshal failed", "err", err)
-		}
+		json.Unmarshal([]byte(finalHeadersStr), &headerMap)
 	}
 
 	finalBody := safeFillTemplate(bodyTemplate, bodyValues)
 
-	// 10. Sign the Payload (Chain of Custody)
-	// We calculate the signature here to ensure the global key is accessed safely
+	// Chain of Custody (Signing)
 	var signatureHex string
 	var pubkeyHex string
-
 	if crypto.GlobalValidatorKey != nil {
-		// Hash the body
 		hash := crypto.Keccak256([]byte(finalBody))
-		
-		// Sign: [R || S || V] (65 bytes)
 		sig, err := crypto.Sign(hash, crypto.GlobalValidatorKey)
 		if err == nil {
 			signatureHex = "0x" + hex.EncodeToString(sig)
-			// Also grab pubkey for convenience
 			pubkeyBytes := crypto.FromECDSAPub(&crypto.GlobalValidatorKey.PublicKey)
 			pubkeyHex = "0x" + hex.EncodeToString(pubkeyBytes)
-		} else {
-			log.Error("HOST: Failed to sign payload", "err", err)
 		}
 	}
 
-	// 11. Fire Webhook (Async)
 	go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
 
-	return returnRequestID(gasLeft)
+	return returnRequestID()
 }
 
-// safeFillTemplate processes template with decryption - never panics
+// ... [Helper functions safeFillTemplate, decryptECDH, fireWebhook remain the same] ...
 func safeFillTemplate(template string, values []string) string {
 	defer func() {
 		if r := recover(); r != nil {
@@ -278,7 +248,6 @@ func safeFillTemplate(template string, values []string) string {
 	return strings.NewReplacer(replacements...).Replace(template)
 }
 
-// decryptECDH decrypts using ECDH shared secret + AES-GCM
 func decryptECDH(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < 93 {
 		return nil, fmt.Errorf("ciphertext too short")
@@ -335,11 +304,9 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 		return
 	}
 
-	// Standard Headers
 	req.Header.Set("User-Agent", "Vitruveo-HOST/1.0")
 	req.Header.Set("X-HOST-Request-ID", requestId.String())
 
-	// Chain of Custody Headers
 	if signature != "" {
 		req.Header.Set("X-HOST-Signature", signature)
 		req.Header.Set("X-HOST-Pubkey", pubkey)
