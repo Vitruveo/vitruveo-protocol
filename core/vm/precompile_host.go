@@ -41,70 +41,66 @@ const (
 
 // RunHOST executes the HOST precompile logic
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
-	// 1. FLAT FEE (Consensus Critical)
-	// We deduct the MAXIMUM possible cost (25k + 100k) upfront for EVERYONE.
-	// This guarantees that Miners (who skip) and Verifiers (who run)
-	// report the exact same 'gasUsed', preventing a fork.
-	totalCost := uint64(HostGasCost + RegistryCallGas)
-	if suppliedGas < totalCost {
-		return nil, 0, ErrOutOfGas
-	}
-	gasLeft = suppliedGas - totalCost
+	// 1. CAPTURE CONTEXT (Pure Go)
+    // We capture this early to separate decision logic from execution logic.
+    isMining := IsMining.Load()
+    isValidator := crypto.GlobalValidatorKey != nil
 
-	// Helper for consistent returns (Always return RequestID + Remainder Gas)
-	// We return the Request ID (from input) so the EVM output is identical for both paths.
-	returnRequestID := func() ([]byte, uint64, error) {
-		var requestIdBytes []byte
-		data := input
-		if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
-			data = input[4:]
-		}
-		if len(data) > 32 {
-			requestIdBytes = data[:32]
-		} else {
-			requestIdBytes = common.LeftPadBytes(data, 32)
-		}
-		requestId := new(big.Int).SetBytes(requestIdBytes)
-		return math.PaddedBigBytes(requestId, 32), gasLeft, nil
-	}
+    // 2. FLAT FEE (Consensus Critical)
+    totalCost := uint64(HostGasCost + RegistryCallGas)
+    if suppliedGas < totalCost {
+        return nil, 0, ErrOutOfGas
+    }
+    gasLeft = suppliedGas - totalCost
 
-	// 2. MINING CHECK (The "Magic Bullet")
-	// If we are Mining, we skip execution to prevent double-firing.
-	// The webhook will fire when we Import/Verify this block in a few milliseconds.
-	if IsMining.Load() {
-		return returnRequestID()
-	}
+    // Helper for returns
+    returnRequestID := func() ([]byte, uint64, error) {
+        var requestIdBytes []byte
+        data := input
+        if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
+            data = input[4:]
+        }
+        if len(data) > 32 {
+            requestIdBytes = data[:32]
+        } else {
+            requestIdBytes = common.LeftPadBytes(data, 32)
+        }
+        requestId := new(big.Int).SetBytes(requestIdBytes)
+        return math.PaddedBigBytes(requestId, 32), gasLeft, nil
+    }
 
-	// 3. VALIDATOR CHECK (Prevent Observers from Firing)
-	// If we don't have a private key, we are just a read-only node. Skip.
-	if crypto.GlobalValidatorKey == nil {
-		return returnRequestID()
-	}
-	myAddress := crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+    // 3. SETUP ADDRESS (Handle Observers vs Validators)
+    // We CANNOT return early if key is nil, because we must warm the storage.
+    // If we are an Observer, we just use the Zero Address. 
+    // The Registry will likely return "shouldProcess: false", which is fine.
+    var myAddress common.Address
+    if isValidator {
+        myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+    }
 
-	// --- EXECUTION LOGIC (Only runs during Verification) ---
+    // --- EXECUTION LOGIC (Runs on ALL nodes) ---
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("HOST: Panic recovered in RunHOST", "err", r)
-			ret = nil
-			gasLeft = 0
-			err = ErrExecutionReverted
-		}
-	}()
+    defer func() {
+        if r := recover(); r != nil {
+            log.Error("HOST: Panic recovered in RunHOST", "err", r)
+            ret = nil
+            gasLeft = 0
+            err = ErrExecutionReverted
+        }
+    }()
 
-	// 4. Parse Request ID
-	var requestIdBytes []byte
-	data := input
-	if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
-		data = input[4:]
-	}
-	if len(data) > 32 {
-		requestIdBytes = data[:32]
-	} else {
-		requestIdBytes = common.LeftPadBytes(data, 32)
-	}
-	requestId := new(big.Int).SetBytes(requestIdBytes)
+    // 4. Parse Request ID
+    var requestIdBytes []byte
+    data := input
+    if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
+        data = input[4:]
+    }
+    if len(data) > 32 {
+        requestIdBytes = data[:32]
+    } else {
+        requestIdBytes = common.LeftPadBytes(data, 32)
+    }
+    requestId := new(big.Int).SetBytes(requestIdBytes)
 
 	// 5. Call Registry Contract
 	// We use the 'RegistryCallGas' budget we already paid for (TotalCost).
@@ -245,10 +241,15 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		}
 	}
 
-	// 12. Fire Webhook (Async)
-	go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
+	// 12. SIDE EFFECT (Pure Go - Isolated)
+    // We use our locally captured variables. 
+    // This logic touches NO EVM state, so it cannot cause a fork.
 
-	return returnRequestID()
+    if !isMining && isValidator {
+        go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
+    }
+
+    return returnRequestID()
 }
 
 // safeFillTemplate processes template with decryption - never panics
