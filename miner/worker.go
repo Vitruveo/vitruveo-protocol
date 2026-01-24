@@ -754,6 +754,7 @@ func (w *worker) updateSnapshot(env *environment) {
 }
 
 func (w *worker) commitTransaction(env *environment, tx *types.Transaction) ([]*types.Log, error) {
+	
 	if tx.Type() == types.BlobTxType {
 		return w.commitBlobTransaction(env, tx)
 	}
@@ -805,11 +806,6 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 }
 
 func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
-
-	// BEGIN: HOST Precompile
-	vm.IsMining.Store(true)
-	defer vm.IsMining.Store(false)
-	// END: HOST Precompile
 
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
@@ -1121,6 +1117,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, timestamp int64) {
 		return
 	}
 	start := time.Now()
+
 
 	// Set the coinbase if the worker is running or it's required
 	var coinbase common.Address

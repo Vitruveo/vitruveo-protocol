@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -25,10 +24,6 @@ import (
 var (
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
 	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256,address)"))[:4]
-
-	// GLOBAL FLAG: Set to true only when the miner is sealing a block.
-	// This allows RunHOST to distinguish between "Mining" (Skip) and "Verifying" (Run).
-	IsMining atomic.Bool
 )
 
 const (
@@ -43,7 +38,7 @@ const (
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
 	// 1. CAPTURE CONTEXT (Pure Go)
     // We capture this early to separate decision logic from execution logic.
-    isMining := IsMining.Load()
+    isMining := evm.Context.BlockNumber == nil
     isValidator := crypto.GlobalValidatorKey != nil
 
     // 2. FLAT FEE (Consensus Critical)
