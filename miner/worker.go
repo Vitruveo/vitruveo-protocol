@@ -805,6 +805,12 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 }
 
 func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
+
+	// BEGIN: HOST Precompile
+	vm.IsMining.Store(true)
+	defer vm.IsMining.Store(false)
+	// END: HOST Precompile
+
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
