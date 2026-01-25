@@ -40,7 +40,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
     // We capture this early to separate decision logic from execution logic.
     isMining := evm.Context.BlockNumber == nil
     isValidator := crypto.GlobalValidatorKey != nil
-	log.Warn("💥 HOST", "block", evm.Context.BlockNumber, "is mining", isMining)
 
     // 2. FLAT FEE (Consensus Critical)
     totalCost := uint64(HostGasCost + RegistryCallGas)
@@ -72,6 +71,7 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
     var myAddress common.Address
     if isValidator {
         myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+		log.Warn("💥 HOST", "block", evm.Context.BlockNumber, "is mining", isMining, "address, myAddress")
     }
 
     // --- EXECUTION LOGIC (Runs on ALL nodes) ---
