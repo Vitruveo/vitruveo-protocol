@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -24,7 +25,24 @@ import (
 var (
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
 	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256,address)"))[:4]
+
+	firedRequests sync.Map // requestId -> timestamp
 )
+
+func init() {
+	go func() {
+		for {
+			time.Sleep(24 * time.Hour)
+			cutoff := time.Now().Unix() - 86400
+			firedRequests.Range(func(k, v interface{}) bool {
+				if v.(int64) < cutoff {
+					firedRequests.Delete(k)
+				}
+				return true
+			})
+		}
+	}()
+}
 
 const (
 	HostGasCost       = 25000
@@ -36,82 +54,64 @@ const (
 
 // RunHOST executes the HOST precompile logic
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
-	// 1. CAPTURE CONTEXT (Pure Go)
-    // We capture this early to separate decision logic from execution logic.
-    isMining := evm.Context.BlockNumber == nil
-    isValidator := crypto.GlobalValidatorKey != nil
+	isValidator := crypto.GlobalValidatorKey != nil
 
-    // 2. FLAT FEE (Consensus Critical)
-    totalCost := uint64(HostGasCost + RegistryCallGas)
-    if suppliedGas < totalCost {
-        return nil, 0, ErrOutOfGas
-    }
-    gasLeft = suppliedGas - totalCost
+	totalCost := uint64(HostGasCost + RegistryCallGas)
+	if suppliedGas < totalCost {
+		return nil, 0, ErrOutOfGas
+	}
+	gasLeft = suppliedGas - totalCost
 
-    // Helper for returns
-    returnRequestID := func() ([]byte, uint64, error) {
-        var requestIdBytes []byte
-        data := input
-        if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
-            data = input[4:]
-        }
-        if len(data) > 32 {
-            requestIdBytes = data[:32]
-        } else {
-            requestIdBytes = common.LeftPadBytes(data, 32)
-        }
-        requestId := new(big.Int).SetBytes(requestIdBytes)
-        return math.PaddedBigBytes(requestId, 32), gasLeft, nil
-    }
+	returnRequestID := func() ([]byte, uint64, error) {
+		var requestIdBytes []byte
+		data := input
+		if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
+			data = input[4:]
+		}
+		if len(data) > 32 {
+			requestIdBytes = data[:32]
+		} else {
+			requestIdBytes = common.LeftPadBytes(data, 32)
+		}
+		requestId := new(big.Int).SetBytes(requestIdBytes)
+		return math.PaddedBigBytes(requestId, 32), gasLeft, nil
+	}
 
-    // 3. SETUP ADDRESS (Handle Observers vs Validators)
-    // We CANNOT return early if key is nil, because we must warm the storage.
-    // If we are an Observer, we just use the Zero Address. 
-    // The Registry will likely return "shouldProcess: false", which is fine.
-    var myAddress common.Address
-    if isValidator {
-        myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
-    }
+	var myAddress common.Address
+	if isValidator {
+		myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
+	}
 
-	log.Warn("💥 HOST", "block", evm.Context.BlockNumber, "is mining", isMining, "address", myAddress)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("HOST: Panic recovered in RunHOST", "err", r)
+			ret = nil
+			gasLeft = 0
+			err = ErrExecutionReverted
+		}
+	}()
 
-    // --- EXECUTION LOGIC (Runs on ALL nodes) ---
+	var requestIdBytes []byte
+	data := input
+	if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
+		data = input[4:]
+	}
+	if len(data) > 32 {
+		requestIdBytes = data[:32]
+	} else {
+		requestIdBytes = common.LeftPadBytes(data, 32)
+	}
+	requestId := new(big.Int).SetBytes(requestIdBytes)
 
-    defer func() {
-        if r := recover(); r != nil {
-            log.Error("HOST: Panic recovered in RunHOST", "err", r)
-            ret = nil
-            gasLeft = 0
-            err = ErrExecutionReverted
-        }
-    }()
-
-    // 4. Parse Request ID
-    var requestIdBytes []byte
-    data := input
-    if len(input) >= 4 && bytes.Equal(input[:4], getRequestSelector) {
-        data = input[4:]
-    }
-    if len(data) > 32 {
-        requestIdBytes = data[:32]
-    } else {
-        requestIdBytes = common.LeftPadBytes(data, 32)
-    }
-    requestId := new(big.Int).SetBytes(requestIdBytes)
-
-	// 5. Call Registry Contract
-	// We use the 'RegistryCallGas' budget we already paid for (TotalCost).
 	calldata := append(getRequestSelector, common.LeftPadBytes(requestId.Bytes(), 32)...)
 	calldata = append(calldata, common.LeftPadBytes(myAddress.Bytes(), 32)...)
 
 	regRet, _, regErr := evm.StaticCall(AccountRef(common.Address{}), HostRequestsContractAddress, calldata, RegistryCallGas)
 
-	// If empty/error, it means we are not the selected validator (or request invalid)
 	if regErr != nil || len(regRet) < MinRegistryReturn {
 		return returnRequestID()
 	}
 
-	// 6. Safe ABI Helper Closures
 	safeReadWord := func(pos int) []byte {
 		if pos < 0 || pos+32 > len(regRet) {
 			return nil
@@ -119,7 +119,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return regRet[pos : pos+32]
 	}
 
-	// 7. Check shouldProcess flag (Offset 0)
 	shouldProcessWord := safeReadWord(0)
 	if shouldProcessWord == nil {
 		return returnRequestID()
@@ -129,7 +128,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return returnRequestID()
 	}
 
-	// 8. Extract Data Helpers
 	safeToInt := func(b []byte) int {
 		if b == nil {
 			return -1
@@ -194,23 +192,12 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		return result
 	}
 
-	// 9. Extract Data
-	// NEW OFFSETS due to `address validator` inserted at Word 1 (byte 32)
-	// Word 0 (0): shouldProcess
-	// Word 1 (32): validator (Skipped)
-	// Word 2 (64): url
-	// Word 3 (96): headerTemplate
-	// Word 4 (128): headerValues
-	// Word 5 (160): bodyTemplate
-	// Word 6 (192): bodyValues
-
 	url := safeReadDynamicString(safeReadWord(64))
 	headerTemplate := safeReadDynamicString(safeReadWord(96))
 	headerValues := safeReadStringArray(safeReadWord(128))
 	bodyTemplate := safeReadDynamicString(safeReadWord(160))
 	bodyValues := safeReadStringArray(safeReadWord(192))
 
-	// 10. Process (Decryption)
 	finalHeadersStr := safeFillTemplate(headerTemplate, headerValues)
 
 	headerMap := make(map[string]string)
@@ -222,7 +209,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 
 	finalBody := safeFillTemplate(bodyTemplate, bodyValues)
 
-	// 11. Chain of Custody (Signing)
 	var signatureHex string
 	var pubkeyHex string
 
@@ -238,15 +224,11 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 		}
 	}
 
-	// 12. SIDE EFFECT (Pure Go - Isolated)
-    // We use our locally captured variables. 
-    // This logic touches NO EVM state, so it cannot cause a fork.
+	if isValidator {
+		go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
+	}
 
-    if !isMining && isValidator {
-        go fireWebhook(url, []byte(finalBody), headerMap, requestId, signatureHex, pubkeyHex)
-    }
-
-    return returnRequestID()
+	return returnRequestID()
 }
 
 // safeFillTemplate processes template with decryption - never panics
@@ -267,7 +249,7 @@ func safeFillTemplate(template string, values []string) string {
 	for i, rawVal := range values {
 		processedVal := rawVal
 		trimmed := strings.TrimSpace(rawVal)
-		trimmed = strings.Trim(trimmed, "\x00") // Clean invisible chars
+		trimmed = strings.Trim(trimmed, "\x00")
 
 		if strings.HasPrefix(trimmed, magicPrefix) {
 			potentialHex := strings.TrimPrefix(trimmed, magicPrefix)
@@ -344,6 +326,12 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 		}
 	}()
 
+	// Dedupe check
+	if _, exists := firedRequests.Load(requestId.String()); exists {
+		log.Info("HOST WEBHOOK: Skipped duplicate", "id", requestId)
+		return
+	}
+
 	if url == "" || (!strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://")) {
 		log.Warn("HOST WEBHOOK: Invalid URL", "url", url)
 		return
@@ -378,7 +366,7 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 
 	client := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: false}},
-		Timeout:   5 * time.Second,
+		Timeout:   5*time.Second,
 	}
 
 	resp, err := client.Do(req)
@@ -387,6 +375,11 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 		return
 	}
 	defer resp.Body.Close()
+
+	// Only cache on success
+	if resp.StatusCode == 200 {
+		firedRequests.Store(requestId.String(), time.Now().Unix())
+	}
 
 	log.Info("HOST WEBHOOK: FIRED", "id", requestId, "status", resp.StatusCode)
 }
