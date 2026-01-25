@@ -71,8 +71,9 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
     var myAddress common.Address
     if isValidator {
         myAddress = crypto.PubkeyToAddress(crypto.GlobalValidatorKey.PublicKey)
-		log.Warn("💥 HOST", "block", evm.Context.BlockNumber, "is mining", isMining, "address, myAddress")
     }
+
+	log.Warn("💥 HOST", "block", evm.Context.BlockNumber, "is mining", isMining, "address", myAddress)
 
     // --- EXECUTION LOGIC (Runs on ALL nodes) ---
 
