@@ -26,7 +26,9 @@ var (
 	HostRequestsContractAddress = common.HexToAddress("0xbdc8a59Ec92065848D0a6591F1a67Ce09D5E5FA7")
 	getRequestSelector          = crypto.Keccak256([]byte("getRequest(uint256,address)"))[:4]
 
-	firedRequests sync.Map // requestId -> timestamp
+	firedRequests   sync.Map
+	lastStatsReport int64
+	statsReportMu   sync.Mutex
 )
 
 func init() {
@@ -52,7 +54,6 @@ const (
 	MaxArrayCount     = 1000
 )
 
-// RunHOST executes the HOST precompile logic
 func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft uint64, err error) {
 	isValidator := crypto.GlobalValidatorKey != nil
 
@@ -231,7 +232,6 @@ func RunHOST(evm *EVM, input []byte, suppliedGas uint64) (ret []byte, gasLeft ui
 	return returnRequestID()
 }
 
-// safeFillTemplate processes template with decryption - never panics
 func safeFillTemplate(template string, values []string) string {
 	defer func() {
 		if r := recover(); r != nil {
@@ -283,7 +283,6 @@ func safeFillTemplate(template string, values []string) string {
 	return strings.NewReplacer(replacements...).Replace(template)
 }
 
-// decryptECDH decrypts using ECDH shared secret + AES-GCM
 func decryptECDH(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < 93 {
 		return nil, fmt.Errorf("ciphertext too short")
@@ -326,60 +325,140 @@ func fireWebhook(url string, payload []byte, headers map[string]string, requestI
 		}
 	}()
 
-	// Dedupe check
 	if _, exists := firedRequests.Load(requestId.String()); exists {
 		log.Info("HOST WEBHOOK: Skipped duplicate", "id", requestId)
 		return
 	}
+
+	firedRequests.Store(requestId.String(), time.Now().Unix())
 
 	if url == "" || (!strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://")) {
 		log.Warn("HOST WEBHOOK: Invalid URL", "url", url)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
-	if err != nil {
-		log.Warn("HOST WEBHOOK: Request creation failed", "err", err)
-		return
-	}
-
-	req.Header.Set("User-Agent", "Vitruveo-HOST/1.0")
-	req.Header.Set("X-HOST-Request-ID", requestId.String())
-
-	if signature != "" {
-		req.Header.Set("X-HOST-Signature", signature)
-		req.Header.Set("X-HOST-Pubkey", pubkey)
-	}
-
-	if _, ok := headers["Content-Type"]; !ok {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	for k, v := range headers {
-		if k != "User-Agent" {
-			req.Header.Set(k, v)
-		}
+	backoff := []time.Duration{
+		0,
+		10 * time.Second,
+		30 * time.Second,
+		1 * time.Minute,
+		5 * time.Minute,
+		15 * time.Minute,
+		30 * time.Minute,
+		45 * time.Minute,
+		60 * time.Minute,
 	}
 
 	client := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: false}},
-		Timeout:   5*time.Second,
+		Timeout:   5 * time.Second,
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Warn("HOST WEBHOOK: Request failed", "err", err)
+	var finalStatus int
+	var finalAttempt int
+	var success bool
+
+	for attempt, delay := range backoff {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
+		if err != nil {
+			cancel()
+			log.Warn("HOST WEBHOOK: Request creation failed", "id", requestId, "attempt", attempt+1, "err", err)
+			continue
+		}
+
+		req.Header.Set("User-Agent", "Vitruveo-HOST/1.0")
+		req.Header.Set("X-HOST-Request-ID", requestId.String())
+
+		if signature != "" {
+			req.Header.Set("X-HOST-Signature", signature)
+			req.Header.Set("X-HOST-Pubkey", pubkey)
+		}
+
+		if _, ok := headers["Content-Type"]; !ok {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		for k, v := range headers {
+			if k != "User-Agent" {
+				req.Header.Set(k, v)
+			}
+		}
+
+		resp, err := client.Do(req)
+		cancel()
+
+		if err != nil {
+			log.Warn("HOST WEBHOOK: Request failed", "id", requestId, "attempt", attempt+1, "err", err)
+			finalAttempt = attempt + 1
+			continue
+		}
+		resp.Body.Close()
+
+		finalStatus = resp.StatusCode
+		finalAttempt = attempt + 1
+
+		if resp.StatusCode == 200 {
+			log.Info("HOST WEBHOOK: FIRED", "id", requestId, "status", resp.StatusCode, "attempt", attempt+1)
+			success = true
+			break
+		}
+
+		log.Warn("HOST WEBHOOK: Non-200 response", "id", requestId, "status", resp.StatusCode, "attempt", attempt+1)
+	}
+
+	if !success {
+		log.Error("HOST WEBHOOK: Gave up after all retries", "id", requestId)
+	}
+
+	go reportStats(requestId, pubkey, url, finalStatus, finalAttempt, success)
+}
+
+func reportStats(requestId *big.Int, pubkey string, targetURL string, status int, attempts int, success bool) {
+	statsReportMu.Lock()
+	now := time.Now().Unix()
+	if now-lastStatsReport < 3600 {
+		statsReportMu.Unlock()
 		return
 	}
-	defer resp.Body.Close()
+	lastStatsReport = now
+	statsReportMu.Unlock()
 
-	// Only cache on success
-	if resp.StatusCode == 200 {
-		firedRequests.Store(requestId.String(), time.Now().Unix())
+	defer func() {
+		recover()
+	}()
+
+	stats := map[string]interface{}{
+		"requestId": requestId.String(),
+		"validator": pubkey,
+		"targetURL": targetURL,
+		"status":    status,
+		"attempts":  attempts,
+		"success":   success,
+		"timestamp": now,
 	}
 
-	log.Info("HOST WEBHOOK: FIRED", "id", requestId, "status", resp.StatusCode)
+	payload, _ := json.Marshal(stats)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://status.vitruveo.ai/webhook", bytes.NewBuffer(payload))
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Vitruveo-HOST/1.0")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
