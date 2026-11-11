@@ -21,24 +21,23 @@ var (
 	BatchBalanceNativePrecompileAddress     	  = common.HexToAddress("0x00000000000000000000000000000000000000BC")
 	CompoundInterestPrecompileAddress 			  = common.HexToAddress("0x00000000000000000000000000000000000000CC")
 	MerklePrecompileAddress			  			  = common.HexToAddress("0x00000000000000000000000000000000000000DD")
-	BatchSendERC20PrecompileAddress         	  = common.HexToAddress("0x00000000000000000000000000000000000000EE")
-	BatchSendNativePrecompileAddress        	  = common.HexToAddress("0x00000000000000000000000000000000000000EC")
 	RNGPrecompileAddress  		  	  			  = common.HexToAddress("0x00000000000000000000000000000000000000FF")
-	IBCPrecompileAddress  		  	  			  = common.HexToAddress("0x00000000000000000000000000000000000001BC")
 	TrendPrecompileAddress  		  	  		  = common.HexToAddress("0x00000000000000000000000000000000000000DC")
+	ProtobufPrecompileAddress                     = common.HexToAddress("0x00000000000000000000000000000000000000B0")
+	MultisigPrecompileAddress                     = common.HexToAddress("0x00000000000000000000000000000000000000AC")
+	FileStorePrecompileAddress                    = common.HexToAddress("0x00000000000000000000000000000000000000F1")
+	C2PAPrecompileAddress                         = common.HexToAddress("0x00000000000000000000000000000000000000CA")
 )
 
 // RunEVMDependentPrecompile checks and runs precompiles that need EVM context.
 // Returns (result, gasLeft, handled, error). If handled is false, continue with normal execution.
-// RunEVMDependentPrecompile checks and runs precompiles that need EVM context.
-func (evm *EVM) RunEVMDependentPrecompile(addr common.Address, input []byte, gas uint64) ([]byte, uint64, bool, error) {
+// static is true when entered via STATICCALL; precompiles that write state
+// must reject writes then, or when already inside a read-only frame.
+func (evm *EVM) RunEVMDependentPrecompile(caller ContractRef, addr common.Address, input []byte, gas uint64, static bool) ([]byte, uint64, bool, error) {
 	switch addr {
 	case HOSTPrecompileAddress:
 	 	ret, leftOver, err := RunHOST(evm, input, gas)
 	 	return ret, leftOver, true, err
-	case IBCPrecompileAddress:
-		ret, leftOver, err := RunIBCVerifier(evm, input, gas)
-		return ret, leftOver, true, err
 	case RNGPrecompileAddress:
 		ret, leftOver, err := RunRNG(evm, input, gas)
 		return ret, leftOver, true, err
@@ -54,11 +53,17 @@ func (evm *EVM) RunEVMDependentPrecompile(addr common.Address, input []byte, gas
 	case BatchBalanceNativePrecompileAddress:
 		ret, leftOver, err := RunBatchBalanceNative(evm, input, gas)
 		return ret, leftOver, true, err
-	case BatchSendNativePrecompileAddress:
-		ret, leftOver, err := RunBatchSendNative(evm, input, gas)
+	case ProtobufPrecompileAddress:
+		ret, leftOver, err := RunProtobuf(evm, caller.Address(), input, gas, static)
 		return ret, leftOver, true, err
-	case BatchSendERC20PrecompileAddress:
-		ret, leftOver, err := RunBatchSendERC20(evm, input, gas)
+	case MultisigPrecompileAddress:
+		ret, leftOver, err := RunMultisig(evm, caller.Address(), input, gas, static)
+		return ret, leftOver, true, err
+	case FileStorePrecompileAddress:
+		ret, leftOver, err := RunFileStore(evm, caller.Address(), input, gas, static)
+		return ret, leftOver, true, err
+	case C2PAPrecompileAddress:
+		ret, leftOver, err := RunC2PA(evm, caller.Address(), input, gas, static)
 		return ret, leftOver, true, err
 	case CompoundInterestPrecompileAddress:
 		ret, leftOver, err := RunCompoundInterest(evm, input, gas)

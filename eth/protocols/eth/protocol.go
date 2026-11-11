@@ -46,7 +46,9 @@ var ProtocolVersions = []uint{ETH68}
 var protocolLengths = map[uint]uint64{ETH68: 17}
 
 // maxMessageSize is the maximum cap on the size of a protocol message.
-const maxMessageSize = 10 * 1024 * 1024
+// Raised from 10MB for file storage blocks (30M gas at 2 gas/byte is up to
+// 15MB of calldata). RLPx frames cannot exceed 16MB-1, so this is the ceiling.
+const maxMessageSize = 1<<24 - 1
 
 const (
 	StatusMsg                     = 0x00

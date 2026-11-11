@@ -116,6 +116,19 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 	return gas, nil
 }
 
+// IntrinsicGasFor is IntrinsicGas with the discounted calldata price for
+// transactions sent directly to the file storage or C2PA precompiles.
+func IntrinsicGasFor(to *common.Address, data []byte, accessList types.AccessList, isContractCreation bool, isHomestead, isEIP2028, isEIP3860 bool) (uint64, error) {
+	if to == nil || (*to != vm.FileStorePrecompileAddress && *to != vm.C2PAPrecompileAddress) {
+		return IntrinsicGas(data, accessList, isContractCreation, isHomestead, isEIP2028, isEIP3860)
+	}
+	gas, err := IntrinsicGas(nil, accessList, false, isHomestead, isEIP2028, isEIP3860)
+	if err != nil {
+		return 0, err
+	}
+	return gas + uint64(len(data))*vm.FileStoreDataGas, nil
+}
+
 // toWordSize returns the ceiled word size required for init code payment calculation.
 func toWordSize(size uint64) uint64 {
 	if size > math.MaxUint64-31 {
@@ -395,7 +408,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	)
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
-	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	gas, err := IntrinsicGasFor(msg.To, msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
 	if err != nil {
 		return nil, err
 	}

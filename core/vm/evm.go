@@ -179,14 +179,19 @@ func (evm *EVM) Interpreter() *EVMInterpreter {
 // execution error or failed value transfer.
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error) {
 	// Placed at the very top to bypass EIP-158 empty account checks
-	// EVM-dependent precompiles (HOST, IBC, etc.)
-	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(addr, input, gas); handled {
+	// EVM-dependent precompiles (HOST, batch, etc.)
+	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(caller, addr, input, gas, false); handled {
 		return ret, leftOverGas, err
 	}
 
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
+	}
+	// Precompile-originated calls reach here without the CALL opcode having
+	// warmed the target; SSTORE in a cold target would otherwise panic.
+	if evm.chainRules.IsBerlin {
+		evm.StateDB.AddAddressToAccessList(addr)
 	}
 	// Fail if we're trying to transfer more than the available balance
 	if !value.IsZero() && !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
@@ -271,14 +276,19 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 // CallCode differs from Call in the sense that it executes the given address'
 // code with the caller as context.
 func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error) {
-	// EVM-dependent precompiles (HOST, IBC, etc.)
-	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(addr, input, gas); handled {
+	// EVM-dependent precompiles (HOST, batch, etc.)
+	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(caller, addr, input, gas, false); handled {
 		return ret, leftOverGas, err
 	}
 
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
+	}
+	// Precompile-originated calls reach here without the CALL opcode having
+	// warmed the target; SSTORE in a cold target would otherwise panic.
+	if evm.chainRules.IsBerlin {
+		evm.StateDB.AddAddressToAccessList(addr)
 	}
 	// Fail if we're trying to transfer more than the available balance
 	// Note although it's noop to transfer X ether to caller itself. But
@@ -324,14 +334,19 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 // DelegateCall differs from CallCode in the sense that it executes the given address'
 // code with the caller as context and the caller is set to the caller of the caller.
 func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
-	// EVM-dependent precompiles (HOST, IBC, etc.)
-	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(addr, input, gas); handled {
+	// EVM-dependent precompiles (HOST, batch, etc.)
+	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(caller, addr, input, gas, false); handled {
 		return ret, leftOverGas, err
 	}
 
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
+	}
+	// Precompile-originated calls reach here without the CALL opcode having
+	// warmed the target; SSTORE in a cold target would otherwise panic.
+	if evm.chainRules.IsBerlin {
+		evm.StateDB.AddAddressToAccessList(addr)
 	}
 	var snapshot = evm.StateDB.Snapshot()
 
@@ -372,13 +387,18 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 // Opcodes that attempt to perform such modifications will result in exceptions
 // instead of performing the modifications.
 func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
-	// EVM-dependent precompiles (HOST, IBC, etc.)
-	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(addr, input, gas); handled {
+	// EVM-dependent precompiles (HOST, batch, etc.)
+	if ret, leftOverGas, handled, err := evm.RunEVMDependentPrecompile(caller, addr, input, gas, true); handled {
 		return ret, leftOverGas, err
 	}
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
+	}
+	// Precompile-originated calls reach here without the CALL opcode having
+	// warmed the target; SSTORE in a cold target would otherwise panic.
+	if evm.chainRules.IsBerlin {
+		evm.StateDB.AddAddressToAccessList(addr)
 	}
 	// We take a snapshot here. This is a bit counter-intuitive, and could probably be skipped.
 	// However, even a staticcall is considered a 'touch'. On mainnet, static calls were introduced

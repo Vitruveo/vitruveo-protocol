@@ -57,6 +57,7 @@ var (
 	mergeInstructionSet            = newMergeInstructionSet()
 	shanghaiInstructionSet         = newShanghaiInstructionSet()
 	cancunInstructionSet           = newCancunInstructionSet()
+	vitruveoInstructionSet         = newVitruveoInstructionSet()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
@@ -87,6 +88,18 @@ func newCancunInstructionSet() JumpTable {
 	enable1153(&instructionSet) // EIP-1153 "Transient Storage"
 	enable5656(&instructionSet) // EIP-5656 (MCOPY opcode)
 	enable6780(&instructionSet) // EIP-6780 SELFDESTRUCT only in same transaction
+	return validate(instructionSet)
+}
+
+// newVitruveoInstructionSet is for Shanghai on a non-merged (Clique) chain:
+// London (keeps DIFFICULTY, no PREVRANDAO) plus PUSH0, initcode metering,
+// transient storage (TSTORE/TLOAD) and MCOPY.
+func newVitruveoInstructionSet() JumpTable {
+	instructionSet := newLondonInstructionSet()
+	enable3855(&instructionSet) // PUSH0 instruction
+	enable3860(&instructionSet) // Limit and meter initcode
+	enable1153(&instructionSet) // EIP-1153 "Transient Storage"
+	enable5656(&instructionSet) // EIP-5656 (MCOPY opcode)
 	return validate(instructionSet)
 }
 
