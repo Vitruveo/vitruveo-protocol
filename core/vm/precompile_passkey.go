@@ -14,6 +14,10 @@ const (
 	PasskeyInputMinLen = 160 // hash(32) | r(32) | s(32) | x(32) | y(32)
 )
 
+// p256HalfN is N/2 for P-256. Signatures with s > p256HalfN are rejected
+// (low-S rule) to prevent signature malleability.
+var p256HalfN = new(big.Int).Rsh(elliptic.P256().Params().N, 1)
+
 // RunPasskey verifies a secp256r1 (P-256) ECDSA signature.
 // Input layout: hash(32) | r(32) | s(32) | x(32) | y(32)
 // Output: 32 bytes, 0x...01 if valid else 0x00
@@ -50,8 +54,7 @@ func RunPasskey(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	}
 
 	// Enforce low-S to prevent signature malleability: s <= N/2
-	halfN := new(big.Int).Rsh(new(big.Int).Set(N), 1)
-	if s.Cmp(halfN) > 0 {
+	if s.Cmp(p256HalfN) > 0 {
 		return passkeyFail(), gas, nil
 	}
 

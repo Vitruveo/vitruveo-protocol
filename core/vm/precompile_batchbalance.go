@@ -15,8 +15,10 @@ const (
 var balanceOfSelector = []byte{0x70, 0xa0, 0x82, 0x31}
 
 // RunBatchBalance returns multiple ERC20 balances in a single call.
-// Input: owner(20) | token1(20) | token2(20) | ...
-// Output: balance1(32) | balance2(32) | ...
+// Input: owner(20) | token1(20) | token2(20) | ... (at least one token)
+// Output: ABI-encoded uint256[] (offset(32) | length(32) | balance1(32) | ...),
+// decodable with abi.decode(ret, (uint256[])). A token whose balanceOf call
+// fails or returns fewer than 32 bytes yields 0.
 // Reverts on malformed input.
 func RunBatchBalance(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	if gas < BatchBalanceBaseGas {
@@ -65,8 +67,12 @@ func RunBatchBalance(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error)
 }
 
 // RunBatchBalanceNative returns native + ERC20 balances.
-// Input: owner(20) | includeNative(1) | token1(20) | token2(20) | ...
-// Output: [nativeBalance(32) if includeNative] | balance1(32) | balance2(32) | ...
+// Input: owner(20) | includeNative(1) | token1(20) | token2(20) | ... (zero or more tokens)
+// Output: ABI-encoded uint256[] (offset(32) | length(32) | elements...), decodable
+// with abi.decode(ret, (uint256[])). Elements are [nativeBalance if includeNative]
+// followed by one balance per token. The format is the same for every input,
+// including zero tokens (an empty array when includeNative is also false).
+// A token whose balanceOf call fails or returns fewer than 32 bytes yields 0.
 // Reverts on malformed input.
 func RunBatchBalanceNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	if gas < BatchBalanceBaseGas {
@@ -102,10 +108,6 @@ func RunBatchBalanceNative(evm *EVM, input []byte, gas uint64) ([]byte, uint64, 
 		balBytes := nativeBal.Bytes()
 		copy(result[32-len(balBytes):32], balBytes)
 		offset = 32
-	}
-
-	if tokenCount == 0 {
-		return result, gas, nil
 	}
 
 	callData := make([]byte, 36)

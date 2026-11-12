@@ -10,6 +10,9 @@ pragma solidity ^0.8.20;
 ///   - signatures: EOA = 0x01 | r | s | v over operationHash (EIP-712, see below)
 ///                 passkey = 0x02 | abi.encode(x, y, authenticatorData, clientDataJSON, r, s)
 ///                 where the WebAuthn challenge is operationHash (base64url)
+///     Both forms must be low-S (s <= N/2 of the respective curve; secp256k1
+///     for EOA, P-256 for passkey). High-S signatures are rejected, so passkey
+///     signers must normalize s to N - s when s > N/2.
 ///   - prior on-chain approve() calls by address owners
 ///   - msg.sender of execute(), if it is an address owner
 ///

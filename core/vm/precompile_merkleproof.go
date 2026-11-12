@@ -12,8 +12,12 @@ const (
 
 // RunMerkleProof verifies a Merkle proof.
 // Input:
-//   root (32) || leaf (32) || proof[0] (32) || ... || proof[n-1] (32)
-// Output: 32 bytes = 1 if valid; empty if invalid or malformed input.
+//
+//	root (32) || leaf (32) || proof[0] (32) || ... || proof[n-1] (32)
+//
+// Output: ABI-encoded bool (32 bytes): 1 if the proof matches root, 0 if it
+// does not. Malformed input (shorter than 64 bytes, or proof bytes not a
+// multiple of 32) reverts with ErrExecutionReverted.
 func RunMerkleProof(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	_ = evm
 
@@ -23,12 +27,12 @@ func RunMerkleProof(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) 
 	gas -= MerkleBaseGas
 
 	if len(input) < MerkleInputMinLen {
-		return nil, gas, nil
+		return nil, gas, ErrExecutionReverted
 	}
 
 	proofBytes := len(input) - 64
 	if proofBytes%32 != 0 {
-		return nil, gas, nil
+		return nil, gas, ErrExecutionReverted
 	}
 	proofLen := proofBytes / 32
 
@@ -49,13 +53,11 @@ func RunMerkleProof(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) 
 		computed = hashPair32(computed, proofElement)
 	}
 
+	out := make([]byte, 32)
 	if bytesEqual32(computed[:], root) {
-		out := make([]byte, 32)
 		out[31] = 1
-		return out, gas, nil
 	}
-
-	return nil, gas, nil
+	return out, gas, nil
 }
 
 // hashPair32 hashes two 32-byte values in sorted order (OpenZeppelin style).

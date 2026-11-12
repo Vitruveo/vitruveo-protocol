@@ -407,6 +407,10 @@ func msVerifyWebAuthn(op common.Hash, x, y *big.Int, authData []byte, clientJSON
 	if r.Sign() <= 0 || s.Sign() <= 0 || r.Cmp(n) >= 0 || s.Cmp(n) >= 0 {
 		return false
 	}
+	// Enforce low-S (s <= N/2) to prevent malleability, matching RunPasskey.
+	if s.Cmp(p256HalfN) > 0 {
+		return false
+	}
 	clientHash := sha256.Sum256([]byte(clientJSON))
 	digest := sha256.Sum256(append(append([]byte{}, authData...), clientHash[:]...))
 	return ecdsa.Verify(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, digest[:], r, s)

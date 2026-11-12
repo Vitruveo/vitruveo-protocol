@@ -17,6 +17,23 @@ var (
 	compoundScale = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 )
 
+// compoundMaxBaseBitLen bounds the squared multiplier. Since result >= 1 and
+// every multiplication by base >= scale is non-decreasing, a base with more
+// than 256+60 bits (2^60 > 1e18) guarantees result*base/scale > 2^256, so the
+// final result cannot fit. Smaller bases are allowed even above 256 bits so a
+// small principal is not rejected spuriously.
+const compoundMaxBaseBitLen = CompoundMaxBitLen + 60
+
+// RunCompoundInterest computes principal * (1 + rate/1e18)^periods with
+// per-step truncation (1e18 fixed point).
+// Input (96 bytes, abi.encode(uint256 principal, uint256 rate, uint256 periods)):
+//
+//	principal (32) || rate (32, 1e18-scaled per period) || periods (32)
+//
+// Output: ABI-encoded uint256 (32 bytes). A zero principal returns 0 and zero
+// periods returns principal. Reverts with ErrExecutionReverted when the input
+// is not exactly 96 bytes, periods exceeds CompoundMaxPeriods, or the result
+// overflows uint256.
 func RunCompoundInterest(evm *EVM, input []byte, gas uint64) ([]byte, uint64, error) {
 	_ = evm
 
@@ -26,23 +43,19 @@ func RunCompoundInterest(evm *EVM, input []byte, gas uint64) ([]byte, uint64, er
 	gas -= CompoundBaseGas
 
 	if len(input) != CompoundInputLen {
-		return nil, gas, nil
+		return nil, gas, ErrExecutionReverted
 	}
 
 	principal := new(big.Int).SetBytes(input[0:32])
 	rate := new(big.Int).SetBytes(input[32:64])
 	periods := new(big.Int).SetBytes(input[64:96])
 
-	if principal.Sign() < 0 || rate.Sign() < 0 || periods.Sign() < 0 {
-		return nil, gas, nil
+	if periods.Cmp(big.NewInt(CompoundMaxPeriods)) > 0 {
+		return nil, gas, ErrExecutionReverted
 	}
 
 	if principal.Sign() == 0 {
 		return make([]byte, 32), gas, nil
-	}
-
-	if periods.Cmp(big.NewInt(CompoundMaxPeriods)) > 0 {
-		return nil, gas, nil
 	}
 
 	p := periods.Uint64()
@@ -75,7 +88,7 @@ func RunCompoundInterest(evm *EVM, input []byte, gas uint64) ([]byte, uint64, er
 			result.Div(result, compoundScale)
 
 			if result.BitLen() > CompoundMaxBitLen {
-				return nil, gas, nil
+				return nil, gas, ErrExecutionReverted
 			}
 		}
 
@@ -92,17 +105,16 @@ func RunCompoundInterest(evm *EVM, input []byte, gas uint64) ([]byte, uint64, er
 		base.Mul(base, base)
 		base.Div(base, compoundScale)
 
-		if base.BitLen() > CompoundMaxBitLen {
-			return nil, gas, nil
+		if base.BitLen() > compoundMaxBaseBitLen {
+			return nil, gas, ErrExecutionReverted
 		}
 	}
 
-	out := make([]byte, 32)
-	b := result.Bytes()
-	if len(b) > 32 {
-		return nil, gas, nil
+	if result.BitLen() > CompoundMaxBitLen {
+		return nil, gas, ErrExecutionReverted
 	}
-	copy(out[32-len(b):], b)
+	out := make([]byte, 32)
+	result.FillBytes(out)
 
 	return out, gas, nil
 }

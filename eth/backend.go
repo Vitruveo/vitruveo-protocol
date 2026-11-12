@@ -101,6 +101,8 @@ type Ethereum struct {
 	lock sync.RWMutex // Protects the variadic fields (e.g. gas price and etherbase)
 
 	shutdownTracker *shutdowncheck.ShutdownTracker // Tracks if and when the node has shutdown ungracefully
+
+	hostWebhooks *hostWebhookWatcher // Fires HOST precompile webhooks for canonical blocks
 }
 
 // New creates a new Ethereum object (including the
@@ -248,6 +250,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}); err != nil {
 		return nil, err
 	}
+
+	eth.hostWebhooks = newHostWebhookWatcher(eth.blockchain)
 
 	eth.miner = miner.New(eth, &config.Miner, eth.blockchain.Config(), eth.EventMux(), eth.engine, eth.isLocalBlock)
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
@@ -515,6 +519,9 @@ func (s *Ethereum) Start() error {
 	// Regularly update shutdown marker
 	s.shutdownTracker.Start()
 
+	// Follow the canonical chain and deliver HOST precompile webhooks
+	s.hostWebhooks.start()
+
 	// Figure out a max peers count based on the server limits
 	maxPeers := s.p2pServer.MaxPeers
 	if s.config.LightServ > 0 {
@@ -541,6 +548,7 @@ func (s *Ethereum) Stop() error {
 	close(s.closeBloomHandler)
 	s.txPool.Close()
 	s.miner.Close()
+	s.hostWebhooks.stop()
 	s.blockchain.Stop()
 	s.engine.Close()
 
